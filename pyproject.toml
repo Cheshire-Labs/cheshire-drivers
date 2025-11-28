@@ -1,0 +1,30 @@
+[project]
+name = "cheshire-drivers"
+version = "0.1.0"
+description = "Shared driver layer for Cheshire Labs lab automation"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "AGPL-3.0"}
+authors = [
+    {name = "Cheshire Labs"}
+]
+
+dependencies = [
+    "pylabrobot @ git+https://github.com/Cheshire-Labs/pylabrobot.git",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.21",
+]
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"*" = ["py.typed"]
