@@ -1,5 +1,0 @@
-pylabrobot@ git+https://github.com/Cheshire-Labs/pylabrobot.git
-
-[dev]
-pytest>=7.0
-pytest-asyncio>=0.21
