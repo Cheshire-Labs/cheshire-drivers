@@ -10,7 +10,7 @@ authors = [
 ]
 
 dependencies = [
-    "pylabrobot @ git+https://github.com/Cheshire-Labs/pylabrobot.git",
+    "pylabrobot[fw] @ git+https://github.com/Cheshire-Labs/pylabrobot.git",
 ]
 
 [project.optional-dependencies]
