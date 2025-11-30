@@ -94,5 +94,5 @@ If you use this software in academic research, please cite PyLabRobot:
 
 ## Related Projects
 
-- [Orca Client Driver](https://github.com/Cheshire-Labs/orca-client-driver) - On-premise WebSocket client using these drivers
+- [Swarm Client](https://github.com/Cheshire-Labs/swarm-client) - On-premise WebSocket client using these drivers
 - [Swarm Backend](https://github.com/Cheshire-Labs/swarm) - Cloud gateway for device integration

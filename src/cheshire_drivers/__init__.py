@@ -1,7 +1,7 @@
 """Cheshire Drivers - Shared driver layer for lab automation.
 
 This package provides driver interfaces, PLR wrappers, and simulation drivers
-for lab automation equipment. It is shared between orca-core and client-driver.
+for lab automation equipment. It is shared between orca-core and swarm-client.
 """
 
 # Interfaces
