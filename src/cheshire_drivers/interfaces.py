@@ -180,6 +180,21 @@ class ITransporterDriver(ABC):
         """Move to a position without picking/placing (for waypoint traversal)."""
         ...
 
+    @abstractmethod
+    async def pick_at_coords(self, teachpoint: Teachpoint) -> None:
+        """Pick plate at coordinates specified by teachpoint."""
+        ...
+
+    @abstractmethod
+    async def place_at_coords(self, teachpoint: Teachpoint) -> None:
+        """Place plate at coordinates specified by teachpoint."""
+        ...
+
+    @abstractmethod
+    async def move_to_coords(self, teachpoint: Teachpoint) -> None:
+        """Move to coordinates specified by teachpoint."""
+        ...
+
 
 class IStorageDriver(BaseDriver, ABC):
     pass

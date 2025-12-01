@@ -201,6 +201,23 @@ class PLRTransporterBackendWrapper(ITransporterDriver):
         self._teachpoints.clear()
         [self._teachpoints.add(t) for t in teachpoints]
 
+    async def pick_at_coords(self, teachpoint: Teachpoint) -> None:
+        """Pick plate at coordinates specified by teachpoint."""
+        coords = convert_teachpoint_to_plr_coord(teachpoint)
+        access = self._teachpoint_to_plr_access(teachpoint)
+        await self._backend.pick_plate(coords, access)
+
+    async def place_at_coords(self, teachpoint: Teachpoint) -> None:
+        """Place plate at coordinates specified by teachpoint."""
+        coords = convert_teachpoint_to_plr_coord(teachpoint)
+        access = self._teachpoint_to_plr_access(teachpoint)
+        await self._backend.place_plate(coords, access)
+
+    async def move_to_coords(self, teachpoint: Teachpoint) -> None:
+        """Move to coordinates specified by teachpoint."""
+        coords = convert_teachpoint_to_plr_coord(teachpoint)
+        await self._backend.move_to(coords)
+
 class PLRSealerBackendWrapper(ISealerDriver):
     def __init__(self, backend: PLRSealerBackend):
         self._backend = backend

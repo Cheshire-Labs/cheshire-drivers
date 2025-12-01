@@ -266,6 +266,24 @@ class SimTransporterDriver(ITransporterDriver):
         """Load taught positions."""
         self._teachpoints = {t.name: t for t in teachpoints}
 
+    async def pick_at_coords(self, teachpoint: Teachpoint) -> None:
+        """Pick plate at coordinates specified by teachpoint."""
+        coords = teachpoint.coordinates
+        await self._sim(f"Driver: {self.name} picking at coords ({coords.x}, {coords.y}, {coords.z})...")
+        logger.info(f"Driver: {self.name} picked at coords ({coords.x}, {coords.y}, {coords.z})")
+
+    async def place_at_coords(self, teachpoint: Teachpoint) -> None:
+        """Place plate at coordinates specified by teachpoint."""
+        coords = teachpoint.coordinates
+        await self._sim(f"Driver: {self.name} placing at coords ({coords.x}, {coords.y}, {coords.z})...")
+        logger.info(f"Driver: {self.name} placed at coords ({coords.x}, {coords.y}, {coords.z})")
+
+    async def move_to_coords(self, teachpoint: Teachpoint) -> None:
+        """Move to coordinates specified by teachpoint."""
+        coords = teachpoint.coordinates
+        await self._sim(f"Driver: {self.name} moving to coords ({coords.x}, {coords.y}, {coords.z})...")
+        logger.info(f"Driver: {self.name} moved to coords ({coords.x}, {coords.y}, {coords.z})")
+
 
 class StorageSimMixin(Sim, IStorageDriver):
     pass
