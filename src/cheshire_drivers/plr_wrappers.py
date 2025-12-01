@@ -18,46 +18,73 @@ __all__ = [
     "PLRSealerBackendWrapper",
     "PLRShakerBackendWrapper",
     "PLRCentrifugeBackendWrapper",
-    "convert_teachpoint_to_plr_coord",
+    "convert_cartesian_to_plr_coord",
+    "convert_joint_to_plr_list",
 ]
 from pylabrobot.arms.backend import PreciseFlexCartesianCoords as PLRCartesianCoords
 from pylabrobot.arms.precise_flex.coords import ElbowOrientation
 
 from pylabrobot.resources import Coordinate, Rotation
 
-from cheshire_drivers.teachpoints import Teachpoint, TeachpointsRegistry
+from cheshire_drivers.teachpoints import Teachpoint, TeachpointsRegistry, JointCoordinates, CartesianCoordinates
 
 
-def convert_teachpoint_to_plr_coord(teachpoint: Teachpoint):
-    """Convert Orca Teachpoint to PyLabRobot CartesianCoords.
+def convert_cartesian_to_plr_coord(
+    coords: CartesianCoordinates,
+    orientation: str | None = None
+) -> PLRCartesianCoords:
+    """Convert CartesianCoordinates to PyLabRobot CartesianCoords.
 
     Args:
-        teachpoint: Orca teachpoint with coordinates and orientation
+        coords: Cartesian coordinates (x, y, z, roll, pitch, yaw)
+        orientation: Optional elbow orientation ('left' or 'right', case-insensitive)
 
     Returns:
         PLRCartesianCoords with proper Coordinate, Rotation, and ElbowOrientation
 
     Raises:
-        ValueError: If orientation is provided but is not 'left' or 'right' (case-insensitive)
+        ValueError: If orientation is provided but is not 'left' or 'right'
     """
-    c = teachpoint.coordinates
-
     # Handle orientation (case-insensitive, optional)
     elbow = None
-    if teachpoint.orientation is not None:
-        orientation_lower = teachpoint.orientation.lower()
+    if orientation is not None:
+        orientation_lower = orientation.lower()
         if orientation_lower == "left":
             elbow = ElbowOrientation.LEFT
         elif orientation_lower == "right":
             elbow = ElbowOrientation.RIGHT
         else:
-            raise ValueError(f"Invalid orientation '{teachpoint.orientation}'. Must be 'left' or 'right' (case-insensitive).")
+            raise ValueError(f"Invalid orientation '{orientation}'. Must be 'left' or 'right' (case-insensitive).")
 
     return PLRCartesianCoords(
-        Coordinate(c.x, c.y, c.z),
-        Rotation(c.roll, c.pitch, c.yaw),
+        Coordinate(coords.x, coords.y, coords.z),
+        Rotation(coords.roll, coords.pitch, coords.yaw),
         elbow
     )
+
+
+def convert_joint_to_plr_list(
+    coords: JointCoordinates,
+    gripper_value: float
+) -> list[float]:
+    """Convert JointCoordinates to PLR joint list format.
+
+    Args:
+        coords: Joint coordinates (j1-j5)
+        gripper_value: Current gripper position to preserve
+
+    Returns:
+        List of 6 floats: [rail, base, shoulder, elbow, wrist, gripper]
+    """
+    return [
+        coords.j1,   # rail
+        coords.j2,   # base
+        coords.j3,   # shoulder
+        coords.j4,   # elbow
+        coords.j5,   # wrist
+        gripper_value
+    ]
+
 
 class PLRTransporterBackendWrapper(ITransporterDriver):
     def __init__(self, backend: PLRArmBackend) -> None:
@@ -113,13 +140,32 @@ class PLRTransporterBackendWrapper(ITransporterDriver):
         # Reverse so we traverse from outermost gateway inward
         return list(reversed(path))
 
+    async def _move_to_joint_coords(self, tp: Teachpoint) -> None:
+        """Move using joint-space coordinates, preserving current gripper state."""
+        coords = tp.coordinates
+        assert isinstance(coords, JointCoordinates)
+
+        # Get current gripper position to preserve it
+        # Note: get_joint_position() returns 6 values [rail, base, shoulder, elbow, wrist, gripper]
+        # Using index access for type compatibility with JointCoords (List[float])
+        current_joints = await self._backend.get_joint_position()
+        gripper_value = list(current_joints)[5]  # gripper is 6th element (index 5)
+
+        joint_list = convert_joint_to_plr_list(coords, gripper_value)
+        await self._backend.move_to(joint_list)
+
     async def move_to_position(self, position_name: str) -> None:
         """Move robot to a position without picking/placing (for waypoints)."""
         tp = self._teachpoints.get(position_name)
         if tp is None:
             raise ValueError(f"The position '{position_name}' is not taught for {self.name}")
-        coords = convert_teachpoint_to_plr_coord(tp)
-        await self._backend.move_to(coords)
+
+        if tp.is_joint_space():
+            await self._move_to_joint_coords(tp)
+        else:
+            assert isinstance(tp.coordinates, CartesianCoordinates)
+            plr_coords = convert_cartesian_to_plr_coord(tp.coordinates, tp.orientation)
+            await self._backend.move_to(plr_coords)
 
     def _teachpoint_to_plr_access(self, tp: Teachpoint):
         """Convert teachpoint access parameters to PLR AccessPattern.
@@ -180,9 +226,10 @@ class PLRTransporterBackendWrapper(ITransporterDriver):
             await self.move_to_position(waypoint.name)
 
         # Execute actual pick
-        coords = convert_teachpoint_to_plr_coord(tp)
+        assert isinstance(tp.coordinates, CartesianCoordinates)
+        plr_coords = convert_cartesian_to_plr_coord(tp.coordinates, tp.orientation)
         access = self._teachpoint_to_plr_access(tp)
-        await self._backend.pick_plate(coords, access)
+        await self._backend.pick_plate(plr_coords, access)
 
         # Traverse gateway path in reverse (exit)
         for waypoint in reversed(gateway_path):
@@ -199,9 +246,10 @@ class PLRTransporterBackendWrapper(ITransporterDriver):
             await self.move_to_position(waypoint.name)
 
         # Execute actual place
-        coords = convert_teachpoint_to_plr_coord(tp)
+        assert isinstance(tp.coordinates, CartesianCoordinates)
+        plr_coords = convert_cartesian_to_plr_coord(tp.coordinates, tp.orientation)
         access = self._teachpoint_to_plr_access(tp)
-        await self._backend.place_plate(coords, access)
+        await self._backend.place_plate(plr_coords, access)
 
         # Traverse gateway path in reverse (exit)
         for waypoint in reversed(gateway_path):
@@ -217,20 +265,23 @@ class PLRTransporterBackendWrapper(ITransporterDriver):
 
     async def pick_at_coords(self, teachpoint: Teachpoint) -> None:
         """Pick plate at coordinates specified by teachpoint."""
-        coords = convert_teachpoint_to_plr_coord(teachpoint)
+        assert isinstance(teachpoint.coordinates, CartesianCoordinates)
+        plr_coords = convert_cartesian_to_plr_coord(teachpoint.coordinates, teachpoint.orientation)
         access = self._teachpoint_to_plr_access(teachpoint)
-        await self._backend.pick_plate(coords, access)
+        await self._backend.pick_plate(plr_coords, access)
 
     async def place_at_coords(self, teachpoint: Teachpoint) -> None:
         """Place plate at coordinates specified by teachpoint."""
-        coords = convert_teachpoint_to_plr_coord(teachpoint)
+        assert isinstance(teachpoint.coordinates, CartesianCoordinates)
+        plr_coords = convert_cartesian_to_plr_coord(teachpoint.coordinates, teachpoint.orientation)
         access = self._teachpoint_to_plr_access(teachpoint)
-        await self._backend.place_plate(coords, access)
+        await self._backend.place_plate(plr_coords, access)
 
     async def move_to_coords(self, teachpoint: Teachpoint) -> None:
         """Move to coordinates specified by teachpoint."""
-        coords = convert_teachpoint_to_plr_coord(teachpoint)
-        await self._backend.move_to(coords)
+        assert isinstance(teachpoint.coordinates, CartesianCoordinates)
+        plr_coords = convert_cartesian_to_plr_coord(teachpoint.coordinates, teachpoint.orientation)
+        await self._backend.move_to(plr_coords)
 
 class PLRSealerBackendWrapper(ISealerDriver):
     def __init__(self, backend: PLRSealerBackend):

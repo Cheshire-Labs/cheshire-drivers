@@ -33,13 +33,28 @@ class CartesianCoordinates:
         self.pitch = pitch
         self.roll = roll
 
+
+class JointCoordinates:
+    """Generic joint coordinates using j1-j5 naming.
+
+    j6 (typically gripper) is excluded - controlled separately via open/close commands.
+    The PLR wrapper maps these to robot-specific joint names.
+    """
+    def __init__(self, j1: float = 0.0, j2: float = 0.0, j3: float = 0.0,
+                 j4: float = 0.0, j5: float = 0.0):
+        self.j1 = j1  # For PreciseFlex: rail
+        self.j2 = j2  # For PreciseFlex: base
+        self.j3 = j3  # For PreciseFlex: shoulder
+        self.j4 = j4  # For PreciseFlex: elbow
+        self.j5 = j5  # For PreciseFlex: wrist
+
 class Teachpoint:
     def __init__(
         self,
         name: str,
-        coordinates: CartesianCoordinates,
-        orientation: str | None,
-        access_type: str,
+        coordinates: CartesianCoordinates | JointCoordinates | None = None,
+        orientation: str | None = None,
+        access_type: str | None = None,
         gripper_offset: float = 20.0,
         retract_distance: float = 100.0,
         vertical_clearance: float = 50.0,
@@ -47,9 +62,10 @@ class Teachpoint:
         gateway: str | None = None
     ) -> None:
         self.name = name
-        self.coordinates = coordinates
+        self.coordinates = coordinates  # Can be CartesianCoordinates or JointCoordinates
         self.orientation = orientation
-        self.access_type = access_type  # "vertical" or "horizontal"
+        # "vertical" or "horizontal" for pick/place destinations; None for waypoints
+        self.access_type = access_type
         self.gripper_offset = gripper_offset  # Gripper height compensation (always used)
         # For VERTICAL access only:
         self.retract_distance = retract_distance  # How far to pull back horizontally
@@ -62,40 +78,91 @@ class Teachpoint:
         # Name of access config this teachpoint uses (for JSON save reconstruction)
         self._access_config_name: str | None = None
 
+    def is_joint_space(self) -> bool:
+        """Returns True if this teachpoint uses joint-space coordinates."""
+        return isinstance(self.coordinates, JointCoordinates)
+
+    def is_cartesian(self) -> bool:
+        """Returns True if this teachpoint uses Cartesian coordinates."""
+        return isinstance(self.coordinates, CartesianCoordinates)
+
     def to_dict(self) -> Dict[str, Any]:
         """Serialize teachpoint to dictionary for network transmission."""
-        return {
-            "name": self.name,
-            "x": self.coordinates.x,
-            "y": self.coordinates.y,
-            "z": self.coordinates.z,
-            "yaw": self.coordinates.yaw,
-            "pitch": self.coordinates.pitch,
-            "roll": self.coordinates.roll,
-            "orientation": self.orientation,
-            "access_type": self.access_type,
-            "gripper_offset": self.gripper_offset,
-            "retract_distance": self.retract_distance,
-            "vertical_clearance": self.vertical_clearance,
-            "z_above": self.z_above,
-            "gateway": self.gateway,
-        }
+        result: Dict[str, Any] = {"name": self.name}
+
+        if self.is_joint_space():
+            coords = self.coordinates
+            assert isinstance(coords, JointCoordinates)
+            result.update({
+                "j1": coords.j1,
+                "j2": coords.j2,
+                "j3": coords.j3,
+                "j4": coords.j4,
+                "j5": coords.j5,
+            })
+        elif self.is_cartesian():
+            coords = self.coordinates
+            assert isinstance(coords, CartesianCoordinates)
+            result.update({
+                "x": coords.x,
+                "y": coords.y,
+                "z": coords.z,
+                "yaw": coords.yaw,
+                "pitch": coords.pitch,
+                "roll": coords.roll,
+                "orientation": self.orientation,
+            })
+
+        if self.access_type is not None:
+            result.update({
+                "access_type": self.access_type,
+                "gripper_offset": self.gripper_offset,
+                "retract_distance": self.retract_distance,
+                "vertical_clearance": self.vertical_clearance,
+                "z_above": self.z_above,
+            })
+
+        if self.gateway is not None:
+            result["gateway"] = self.gateway
+
+        return result
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Teachpoint":
-        """Deserialize teachpoint from dictionary."""
-        return cls(
-            name=data["name"],
-            coordinates=CartesianCoordinates(
+        """Deserialize teachpoint from dictionary.
+
+        Detects coordinate type by presence of 'j1' (joint-space) or 'x' (Cartesian) keys.
+        Defaults to joint-space if neither is present.
+        """
+        # Detect coordinate type
+        if "j1" in data:
+            coordinates: CartesianCoordinates | JointCoordinates | None = JointCoordinates(
+                j1=float(data["j1"]),
+                j2=float(data["j2"]),
+                j3=float(data["j3"]),
+                j4=float(data["j4"]),
+                j5=float(data["j5"]),
+            )
+            orientation = None
+        elif "x" in data:
+            coordinates = CartesianCoordinates(
                 x=float(data["x"]),
                 y=float(data["y"]),
                 z=float(data["z"]),
                 yaw=float(data["yaw"]),
                 pitch=float(data["pitch"]),
                 roll=float(data["roll"]),
-            ),
-            orientation=data.get("orientation"),
-            access_type=data["access_type"],
+            )
+            orientation = data.get("orientation")
+        else:
+            coordinates = None
+            orientation = None
+
+        return cls(
+            name=data["name"],
+            coordinates=coordinates,
+            orientation=orientation,
+            access_type=data.get("access_type"),
             gripper_offset=float(data.get("gripper_offset", 20.0)),
             retract_distance=float(data.get("retract_distance", 100.0)),
             vertical_clearance=float(data.get("vertical_clearance", 50.0)),
@@ -132,31 +199,60 @@ class Teachpoint:
         # Parse teachpoints and resolve access config references
         teachpoints: List[Teachpoint] = []
         for tp_data in data.get('teachpoints', []):
-            # Resolve access config (use default_vertical if not specified)
-            config_name = tp_data.get('access', 'default_vertical')
-            if config_name not in access_configs:
-                raise ValueError(
-                    f"Teachpoint '{tp_data['name']}' references unknown access config '{config_name}'"
+            # Detect coordinate type by key presence
+            if 'j1' in tp_data:
+                # Joint-space coordinates
+                coordinates: CartesianCoordinates | JointCoordinates = JointCoordinates(
+                    j1=float(tp_data['j1']),
+                    j2=float(tp_data['j2']),
+                    j3=float(tp_data['j3']),
+                    j4=float(tp_data['j4']),
+                    j5=float(tp_data['j5'])
                 )
-            cfg = access_configs[config_name]
-
-            # Create teachpoint with resolved access params
-            tp = Teachpoint(
-                name=tp_data['name'],
-                coordinates=CartesianCoordinates(
+                orientation = None
+            else:
+                # Cartesian coordinates
+                coordinates = CartesianCoordinates(
                     x=float(tp_data['x']),
                     y=float(tp_data['y']),
                     z=float(tp_data['z']),
                     yaw=float(tp_data['yaw']),
                     pitch=float(tp_data['pitch']),
                     roll=float(tp_data['roll'])
-                ),
-                orientation=tp_data.get('orientation', None),
-                access_type=cfg.access_type,
-                gripper_offset=cfg.gripper_offset,
-                retract_distance=cfg.retract_distance,
-                vertical_clearance=cfg.vertical_clearance,
-                z_above=cfg.z_above,
+                )
+                orientation = tp_data.get('orientation', None)
+
+            # Resolve access config (optional for waypoints)
+            config_name = tp_data.get('access')
+            if config_name is not None:
+                if config_name not in access_configs:
+                    raise ValueError(
+                        f"Teachpoint '{tp_data['name']}' references unknown access config '{config_name}'"
+                    )
+                cfg = access_configs[config_name]
+                access_type = cfg.access_type
+                gripper_offset = cfg.gripper_offset
+                retract_distance = cfg.retract_distance
+                vertical_clearance = cfg.vertical_clearance
+                z_above = cfg.z_above
+            else:
+                # Waypoint without access config
+                access_type = None
+                gripper_offset = 20.0
+                retract_distance = 100.0
+                vertical_clearance = 50.0
+                z_above = 10.0
+
+            # Create teachpoint with resolved access params
+            tp = Teachpoint(
+                name=tp_data['name'],
+                coordinates=coordinates,
+                orientation=orientation,
+                access_type=access_type,
+                gripper_offset=gripper_offset,
+                retract_distance=retract_distance,
+                vertical_clearance=vertical_clearance,
+                z_above=z_above,
                 gateway=tp_data.get('gateway', None)
             )
             tp._access_config_name = config_name
@@ -209,7 +305,9 @@ class TeachpointsRegistry:
         access_configs_dict: Dict[str, Dict[str, Any]] = {}
 
         for tp in self._registry.values():
-            config_name = tp._access_config_name or 'default_vertical'
+            config_name = tp._access_config_name
+            if config_name is None:
+                continue  # Waypoint without access config
 
             # Skip hardcoded defaults (always available in load)
             if config_name.startswith('default_'):
@@ -228,17 +326,36 @@ class TeachpointsRegistry:
         # Build teachpoints list with access references
         teachpoints_list: List[Dict[str, Any]] = []
         for tp in self._registry.values():
-            tp_dict: Dict[str, Any] = {
-                'name': tp.name,
-                'x': tp.coordinates.x,
-                'y': tp.coordinates.y,
-                'z': tp.coordinates.z,
-                'yaw': tp.coordinates.yaw,
-                'pitch': tp.coordinates.pitch,
-                'roll': tp.coordinates.roll,
-                'orientation': tp.orientation,
-                'access': tp._access_config_name or 'default_vertical'
-            }
+            tp_dict: Dict[str, Any] = {'name': tp.name}
+
+            # Serialize coordinates based on type
+            if tp.is_joint_space():
+                coords = tp.coordinates
+                assert isinstance(coords, JointCoordinates)
+                tp_dict.update({
+                    'j1': coords.j1,
+                    'j2': coords.j2,
+                    'j3': coords.j3,
+                    'j4': coords.j4,
+                    'j5': coords.j5,
+                })
+            elif tp.is_cartesian():
+                coords = tp.coordinates
+                assert isinstance(coords, CartesianCoordinates)
+                tp_dict.update({
+                    'x': coords.x,
+                    'y': coords.y,
+                    'z': coords.z,
+                    'yaw': coords.yaw,
+                    'pitch': coords.pitch,
+                    'roll': coords.roll,
+                    'orientation': tp.orientation,
+                })
+
+            # Add access config reference if present
+            if tp._access_config_name is not None:
+                tp_dict['access'] = tp._access_config_name
+
             if tp.gateway:
                 tp_dict['gateway'] = tp.gateway
             teachpoints_list.append(tp_dict)
