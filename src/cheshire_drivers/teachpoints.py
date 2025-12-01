@@ -62,6 +62,47 @@ class Teachpoint:
         # Name of access config this teachpoint uses (for JSON save reconstruction)
         self._access_config_name: str | None = None
 
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize teachpoint to dictionary for network transmission."""
+        return {
+            "name": self.name,
+            "x": self.coordinates.x,
+            "y": self.coordinates.y,
+            "z": self.coordinates.z,
+            "yaw": self.coordinates.yaw,
+            "pitch": self.coordinates.pitch,
+            "roll": self.coordinates.roll,
+            "orientation": self.orientation,
+            "access_type": self.access_type,
+            "gripper_offset": self.gripper_offset,
+            "retract_distance": self.retract_distance,
+            "vertical_clearance": self.vertical_clearance,
+            "z_above": self.z_above,
+            "gateway": self.gateway,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "Teachpoint":
+        """Deserialize teachpoint from dictionary."""
+        return cls(
+            name=data["name"],
+            coordinates=CartesianCoordinates(
+                x=float(data["x"]),
+                y=float(data["y"]),
+                z=float(data["z"]),
+                yaw=float(data["yaw"]),
+                pitch=float(data["pitch"]),
+                roll=float(data["roll"]),
+            ),
+            orientation=data.get("orientation"),
+            access_type=data["access_type"],
+            gripper_offset=float(data.get("gripper_offset", 20.0)),
+            retract_distance=float(data.get("retract_distance", 100.0)),
+            vertical_clearance=float(data.get("vertical_clearance", 50.0)),
+            z_above=float(data.get("z_above", 10.0)),
+            gateway=data.get("gateway"),
+        )
+
     @staticmethod
     def load_teachpoints_from_file(file_path: str) -> List[Teachpoint]:
         with open(file_path, 'r') as f:
