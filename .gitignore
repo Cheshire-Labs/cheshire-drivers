@@ -33,3 +33,6 @@ htmlcov/
 .coverage
 .coverage.*
 coverage.xml
+
+# Serena
+.serena/
