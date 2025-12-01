@@ -29,6 +29,10 @@ from cheshire_drivers.plr_wrappers import (
     PLRShakerBackendWrapper,
     PLRCentrifugeBackendWrapper,
     convert_teachpoint_to_plr_coord,
+    PLRArmBackend,
+    PLRSealerBackend,
+    PLRShakerBackend,
+    PLRCentrifugeBackend,
 )
 
 # Simulation Drivers
@@ -93,6 +97,10 @@ __all__ = [
     "PLRShakerBackendWrapper",
     "PLRCentrifugeBackendWrapper",
     "convert_teachpoint_to_plr_coord",
+    "PLRArmBackend",
+    "PLRSealerBackend",
+    "PLRShakerBackend",
+    "PLRCentrifugeBackend",
     # Simulation Drivers
     "SimStrategy",
     "SleepSim",

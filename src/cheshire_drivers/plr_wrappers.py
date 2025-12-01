@@ -6,8 +6,22 @@ from pylabrobot.sealing.backend import SealerBackend as PLRSealerBackend
 from pylabrobot.shaking.backend import ShakerBackend as PLRShakerBackend
 from pylabrobot.centrifuge.backend import CentrifugeBackend as PLRCentrifugeBackend
 
-from pylabrobot.arms.backend import ArmBackend as PLRArmBackend, VerticalAccess, HorizontalAccess
-from pylabrobot.arms.coords import CartesianCoords as PLRCartesianCoords, ElbowOrientation
+from pylabrobot.arms.backend import SCARABackend as PLRArmBackend, VerticalAccess, HorizontalAccess
+
+# Re-export PLR backends for use by orca-core
+__all__ = [
+    "PLRArmBackend",
+    "PLRSealerBackend",
+    "PLRShakerBackend",
+    "PLRCentrifugeBackend",
+    "PLRTransporterBackendWrapper",
+    "PLRSealerBackendWrapper",
+    "PLRShakerBackendWrapper",
+    "PLRCentrifugeBackendWrapper",
+    "convert_teachpoint_to_plr_coord",
+]
+from pylabrobot.arms.backend import PreciseFlexCartesianCoords as PLRCartesianCoords
+from pylabrobot.arms.precise_flex.coords import ElbowOrientation
 
 from pylabrobot.resources import Coordinate, Rotation
 
