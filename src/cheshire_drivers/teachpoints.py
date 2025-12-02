@@ -78,6 +78,12 @@ class Teachpoint:
         # Name of access config this teachpoint uses (for JSON save reconstruction)
         self._access_config_name: str | None = None
 
+        # Validate: Cartesian teachpoints must have orientation for crossover detection
+        if self.is_cartesian() and self.orientation is None:
+            raise ValueError(
+                f"Cartesian teachpoint '{self.name}' must specify orientation (left/right)"
+            )
+
     def is_joint_space(self) -> bool:
         """Returns True if this teachpoint uses joint-space coordinates."""
         return isinstance(self.coordinates, JointCoordinates)

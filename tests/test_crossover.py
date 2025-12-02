@@ -1,0 +1,166 @@
+"""Tests for crossover maneuver logic in PLRTransporterBackendWrapper.
+
+These tests verify the crossover detection and maneuver sequence logic.
+The actual motion control will need validation on real hardware.
+"""
+from typing import Any, List, Union
+
+import pytest
+from pylabrobot.arms.backend import SCARABackend, VerticalAccess, HorizontalAccess
+from pylabrobot.arms.precise_flex.coords import PreciseFlexCartesianCoords
+from pylabrobot.resources.coordinate import Coordinate
+from pylabrobot.resources.rotation import Rotation
+
+from cheshire_drivers.teachpoints import Teachpoint, JointCoordinates, CartesianCoordinates
+from cheshire_drivers.plr_wrappers import PLRTransporterBackendWrapper
+
+
+class MockPLRBackend(SCARABackend):
+    """Mock PLR arm backend for unit testing crossover logic."""
+
+    def __init__(self, has_rail: bool = True, initial_joints: List[float] | None = None):
+        super().__init__()
+        self._has_rail = has_rail
+        self._joints = initial_joints or [0.0, 170.0, 0.0, 150.0, 0.0, 75.0]
+        self.calls: List[tuple[str, tuple[Any, ...]]] = []
+
+    async def setup(self) -> None:
+        pass
+
+    async def stop(self) -> None:
+        pass
+
+    async def halt(self) -> None:
+        pass
+
+    async def home(self) -> None:
+        pass
+
+    async def move_to_safe(self) -> None:
+        pass
+
+    async def get_joint_position(self) -> List[float]:
+        return self._joints.copy()
+
+    async def get_cartesian_position(self) -> PreciseFlexCartesianCoords:
+        return PreciseFlexCartesianCoords(
+            location=Coordinate(x=0, y=0, z=0),
+            rotation=Rotation(x=0, y=0, z=0)
+        )
+
+    async def move_to(self, position: Union[PreciseFlexCartesianCoords, List[float]]) -> None:
+        self.calls.append(('move_to', (position,)))
+
+    async def move_one_axis(self, axis: int, position: float, profile: int) -> None:
+        self.calls.append(('move_one_axis', (axis, position, profile)))
+        if self._has_rail:
+            self._joints[axis] = position
+
+    async def approach(
+        self,
+        position: Union[PreciseFlexCartesianCoords, List[float]],
+        access: Union[VerticalAccess, HorizontalAccess, None] = None
+    ) -> None:
+        pass
+
+    async def pick_plate(
+        self,
+        position: Union[PreciseFlexCartesianCoords, List[float]],
+        access: Union[VerticalAccess, HorizontalAccess, None] = None
+    ) -> None:
+        self.calls.append(('pick_plate', (position, access)))
+
+    async def place_plate(
+        self,
+        position: Union[PreciseFlexCartesianCoords, List[float]],
+        access: Union[VerticalAccess, HorizontalAccess, None] = None
+    ) -> None:
+        self.calls.append(('place_plate', (position, access)))
+
+    async def open_gripper(self) -> None:
+        pass
+
+    async def close_gripper(self) -> None:
+        pass
+
+    async def is_gripper_closed(self) -> bool:
+        return True
+
+
+class TestCrossoverDetection:
+    """Verify crossover is detected when orientation changes."""
+
+    @pytest.mark.asyncio
+    async def test_right_to_left_needs_crossover(self):
+        backend = MockPLRBackend(initial_joints=[0, 170, 0, 150, 0, 75])  # elbow<180 = right
+        wrapper = PLRTransporterBackendWrapper(backend)
+        tp = Teachpoint(name="left", coordinates=JointCoordinates(j4=220))  # elbow>180 = left
+
+        assert await wrapper._needs_crossover(tp) is True
+
+    @pytest.mark.asyncio
+    async def test_same_orientation_no_crossover(self):
+        backend = MockPLRBackend(initial_joints=[0, 170, 0, 150, 0, 75])  # right
+        wrapper = PLRTransporterBackendWrapper(backend)
+        tp = Teachpoint(name="right", coordinates=JointCoordinates(j4=120))  # also right
+
+        assert await wrapper._needs_crossover(tp) is False
+
+
+class TestCrossoverManeuverSequence:
+    """Verify crossover executes 5-step sequence with correct angles."""
+
+    @pytest.mark.asyncio
+    async def test_crossover_from_right_sequence(self):
+        backend = MockPLRBackend(initial_joints=[0, 170, 0, 150, 0, 75])
+        wrapper = PLRTransporterBackendWrapper(backend)
+
+        await wrapper._perform_crossover_maneuver()
+
+        moves = [c[1] for c in backend.calls if c[0] == 'move_one_axis']
+        assert len(moves) == 5
+
+        # Verify key positions: shoulder→0, elbow→150, wrist→0, elbow→180, elbow→210
+        assert moves[0] == (2, 0.0, 1)    # shoulder to 0
+        assert moves[1] == (3, 150.0, 1)  # elbow tuck (right safe)
+        assert moves[3] == (3, 180.0, 1)  # elbow under bar
+        assert moves[4] == (3, 210.0, 1)  # elbow exit (left safe)
+
+    @pytest.mark.asyncio
+    async def test_crossover_from_left_sequence(self):
+        backend = MockPLRBackend(initial_joints=[0, 170, 0, 220, 0, 75])  # left
+        wrapper = PLRTransporterBackendWrapper(backend)
+
+        await wrapper._perform_crossover_maneuver()
+
+        moves = [c[1] for c in backend.calls if c[0] == 'move_one_axis']
+        assert moves[1] == (3, 210.0, 1)  # elbow tuck (left safe)
+        assert moves[4] == (3, 150.0, 1)  # elbow exit (right safe)
+
+
+class TestWristUnwind:
+    """Verify wrist unwinds toward 0 during crossover."""
+
+    def test_wrist_unwind_positions(self):
+        backend = MockPLRBackend()
+        wrapper = PLRTransporterBackendWrapper(backend)
+
+        assert wrapper._get_nearest_wrist_unwind_position(200) == 180
+        assert wrapper._get_nearest_wrist_unwind_position(-500) == -360
+        assert wrapper._get_nearest_wrist_unwind_position(0) == 0
+
+
+class TestTeachpointOrientation:
+    """Verify Cartesian teachpoints require orientation."""
+
+    def test_cartesian_requires_orientation(self):
+        with pytest.raises(ValueError, match="must specify orientation"):
+            Teachpoint(
+                name="no_orient",
+                coordinates=CartesianCoordinates(x=100, y=0, z=0, yaw=0, pitch=0, roll=0),
+                access_type="horizontal"
+            )
+
+    def test_joint_no_orientation_ok(self):
+        tp = Teachpoint(name="joint", coordinates=JointCoordinates(j4=150))
+        assert tp.orientation is None

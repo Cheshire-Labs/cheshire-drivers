@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 from typing import Any, Dict, List
 
 
-from cheshire_drivers.teachpoints import Teachpoint
+from cheshire_drivers.teachpoints import JointCoordinates, Teachpoint
 
 
 class BaseDriver(ABC):
@@ -193,6 +193,15 @@ class ITransporterDriver(ABC):
     @abstractmethod
     async def move_to_coords(self, teachpoint: Teachpoint) -> None:
         """Move to coordinates specified by teachpoint."""
+        ...
+
+    @abstractmethod
+    async def get_joint_position(self) -> JointCoordinates:
+        """Get current joint positions.
+
+        Returns:
+            JointCoordinates with current j1-j5 values (j6/gripper excluded).
+        """
         ...
 
 
