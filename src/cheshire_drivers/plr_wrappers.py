@@ -63,26 +63,22 @@ def convert_cartesian_to_plr_coord(
     )
 
 
-def convert_joint_to_plr_list(
-    coords: JointCoordinates,
-    gripper_value: float
-) -> list[float]:
+def convert_joint_to_plr_list(coords: JointCoordinates) -> list[float]:
     """Convert JointCoordinates to PLR joint list format.
 
     Args:
-        coords: Joint coordinates (j1-j5)
-        gripper_value: Current gripper position to preserve
+        coords: Joint coordinates with all 6 joints
 
     Returns:
         List of 6 floats: [rail, base, shoulder, elbow, wrist, gripper]
     """
     return [
-        coords.j1,   # rail
-        coords.j2,   # base
-        coords.j3,   # shoulder
-        coords.j4,   # elbow
-        coords.j5,   # wrist
-        gripper_value
+        coords.rail,
+        coords.base,
+        coords.shoulder,
+        coords.elbow,
+        coords.wrist,
+        coords.gripper
     ]
 
 
@@ -95,6 +91,7 @@ class PLRTransporterBackendWrapper(ITransporterDriver):
 
     # Crossover maneuver constants
     # Safe elbow angles for tucking before crossing under the ulnar bar
+    SAFE_SHOULDER = 0.0     # Shoulder angle to point arm forward
     SAFE_ELBOW_RIGHT = 150.0  # Safe angle when in right orientation (elbow < 180)
     SAFE_ELBOW_LEFT = 210.0   # Safe angle when in left orientation (elbow > 180)
     ELBOW_CROSSOVER = 180.0   # The "under the bar" position
@@ -157,13 +154,21 @@ class PLRTransporterBackendWrapper(ITransporterDriver):
         coords = tp.coordinates
         assert isinstance(coords, JointCoordinates)
 
-        # Get current gripper position to preserve it
-        # Note: get_joint_position() returns 6 values [rail, base, shoulder, elbow, wrist, gripper]
-        # Using index access for type compatibility with JointCoords (List[float])
+        # Get current gripper position to preserve it (teachpoints don't store gripper)
         current_joints = await self._backend.get_joint_position()
-        gripper_value = list(current_joints)[5]  # gripper is 6th element (index 5)
+        current_gripper = list(current_joints)[5]  # gripper is 6th element (index 5)
 
-        joint_list = convert_joint_to_plr_list(coords, gripper_value)
+        # Create JointCoordinates with current gripper state
+        coords_with_gripper = JointCoordinates(
+            rail=coords.rail,
+            base=coords.base,
+            shoulder=coords.shoulder,
+            elbow=coords.elbow,
+            wrist=coords.wrist,
+            gripper=current_gripper
+        )
+
+        joint_list = convert_joint_to_plr_list(coords_with_gripper)
         await self._backend.move_to(joint_list)
 
     async def get_joint_position(self) -> JointCoordinates:
@@ -172,11 +177,12 @@ class PLRTransporterBackendWrapper(ITransporterDriver):
         # PLR returns joint values as iterable: [rail, base, shoulder, elbow, wrist, gripper]
         joints_list = list(plr_joints)
         return JointCoordinates(
-            j1=joints_list[0],  # rail
-            j2=joints_list[1],  # base
-            j3=joints_list[2],  # shoulder
-            j4=joints_list[3],  # elbow
-            j5=joints_list[4]   # wrist
+            rail=joints_list[0],
+            base=joints_list[1],
+            shoulder=joints_list[2],
+            elbow=joints_list[3],
+            wrist=joints_list[4],
+            gripper=joints_list[5]
         )
 
     def _get_axis_index(self, joint_name: str) -> int:
@@ -186,21 +192,21 @@ class PLRTransporterBackendWrapper(ITransporterDriver):
             joint_name: One of 'rail', 'base', 'shoulder', 'elbow', 'wrist', 'gripper'
 
         Returns:
-            The axis number to use with move_one_axis command.
+            The axis number to use with move_one_axis command (1-based per Brooks TCS API).
         """
         has_rail = getattr(self._backend, '_has_rail', True)
 
         if has_rail:
-            # With rail: 0=rail, 1=base, 2=shoulder, 3=elbow, 4=wrist, 5=gripper
+            # With rail: 1=rail, 2=base, 3=shoulder, 4=elbow, 5=wrist, 6=gripper
             axis_map = {
-                'rail': 0, 'base': 1, 'shoulder': 2,
-                'elbow': 3, 'wrist': 4, 'gripper': 5
+                'rail': 1, 'base': 2, 'shoulder': 3,
+                'elbow': 4, 'wrist': 5, 'gripper': 6
             }
         else:
-            # Without rail: 0=base, 1=shoulder, 2=elbow, 3=wrist, 4=gripper
+            # Without rail: 1=base, 2=shoulder, 3=elbow, 4=wrist, 5=gripper
             axis_map = {
-                'base': 0, 'shoulder': 1, 'elbow': 2,
-                'wrist': 3, 'gripper': 4
+                'base': 1, 'shoulder': 2, 'elbow': 3,
+                'wrist': 4, 'gripper': 5
             }
 
         if joint_name not in axis_map:
@@ -248,12 +254,12 @@ class PLRTransporterBackendWrapper(ITransporterDriver):
         (left <-> right) to reach the target position.
         """
         current_joints = await self.get_joint_position()
-        current_elbow = current_joints.j4
+        current_elbow = current_joints.elbow
         current_is_left = current_elbow > 180
 
         if teachpoint.is_joint_space():
             assert isinstance(teachpoint.coordinates, JointCoordinates)
-            target_is_left = teachpoint.coordinates.j4 > 180
+            target_is_left = teachpoint.coordinates.elbow > 180
         else:
             # Cartesian - orientation is required
             if teachpoint.orientation is None:
@@ -279,13 +285,13 @@ class PLRTransporterBackendWrapper(ITransporterDriver):
         5. Move elbow to opposite safe angle (switch orientation)
         """
         current_joints = await self.get_joint_position()
-        current_elbow = current_joints.j4
-        current_wrist = current_joints.j5
+        current_elbow = current_joints.elbow
+        current_wrist = current_joints.wrist
 
         currently_right = current_elbow < 180
 
         # Step 1: Move shoulder to 0 (arm points forward)
-        await self._move_one_axis('shoulder', 0.0)
+        await self._move_one_axis('shoulder', self.SAFE_SHOULDER)
 
         # Step 2: Move elbow to safe tuck angle
         tuck_angle = self.SAFE_ELBOW_RIGHT if currently_right else self.SAFE_ELBOW_LEFT

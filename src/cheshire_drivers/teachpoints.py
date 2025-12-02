@@ -35,18 +35,26 @@ class CartesianCoordinates:
 
 
 class JointCoordinates:
-    """Generic joint coordinates using j1-j5 naming.
+    """Joint coordinates using semantic naming - all 6 joints.
 
-    j6 (typically gripper) is excluded - controlled separately via open/close commands.
-    The PLR wrapper maps these to robot-specific joint names.
+    Rail defaults to 0.0 for robots without rail.
+    Gripper defaults to 0.0 (teachpoints typically don't store gripper state).
     """
-    def __init__(self, j1: float = 0.0, j2: float = 0.0, j3: float = 0.0,
-                 j4: float = 0.0, j5: float = 0.0):
-        self.j1 = j1  # For PreciseFlex: rail
-        self.j2 = j2  # For PreciseFlex: base
-        self.j3 = j3  # For PreciseFlex: shoulder
-        self.j4 = j4  # For PreciseFlex: elbow
-        self.j5 = j5  # For PreciseFlex: wrist
+    def __init__(
+        self,
+        rail: float = 0.0,
+        base: float = 0.0,
+        shoulder: float = 0.0,
+        elbow: float = 0.0,
+        wrist: float = 0.0,
+        gripper: float = 0.0
+    ):
+        self.rail = rail
+        self.base = base
+        self.shoulder = shoulder
+        self.elbow = elbow
+        self.wrist = wrist
+        self.gripper = gripper
 
 class Teachpoint:
     def __init__(
@@ -100,12 +108,13 @@ class Teachpoint:
             coords = self.coordinates
             assert isinstance(coords, JointCoordinates)
             result.update({
-                "j1": coords.j1,
-                "j2": coords.j2,
-                "j3": coords.j3,
-                "j4": coords.j4,
-                "j5": coords.j5,
+                "base": coords.base,
+                "shoulder": coords.shoulder,
+                "elbow": coords.elbow,
+                "wrist": coords.wrist,
             })
+            if coords.rail != 0.0:
+                result["rail"] = coords.rail
         elif self.is_cartesian():
             coords = self.coordinates
             assert isinstance(coords, CartesianCoordinates)
@@ -140,14 +149,24 @@ class Teachpoint:
         Detects coordinate type by presence of 'j1' (joint-space) or 'x' (Cartesian) keys.
         Defaults to joint-space if neither is present.
         """
-        # Detect coordinate type
-        if "j1" in data:
+        # Detect coordinate type: "base" = new format, "j1" = legacy format
+        if "base" in data:
             coordinates: CartesianCoordinates | JointCoordinates | None = JointCoordinates(
-                j1=float(data["j1"]),
-                j2=float(data["j2"]),
-                j3=float(data["j3"]),
-                j4=float(data["j4"]),
-                j5=float(data["j5"]),
+                base=float(data["base"]),
+                shoulder=float(data["shoulder"]),
+                elbow=float(data["elbow"]),
+                wrist=float(data["wrist"]),
+                rail=float(data.get("rail", 0.0)),
+            )
+            orientation = None
+        elif "j1" in data:
+            # Legacy format: j1=rail, j2=base, j3=shoulder, j4=elbow, j5=wrist
+            coordinates = JointCoordinates(
+                rail=float(data["j1"]),
+                base=float(data["j2"]),
+                shoulder=float(data["j3"]),
+                elbow=float(data["j4"]),
+                wrist=float(data["j5"]),
             )
             orientation = None
         elif "x" in data:
@@ -205,15 +224,25 @@ class Teachpoint:
         # Parse teachpoints and resolve access config references
         teachpoints: List[Teachpoint] = []
         for tp_data in data.get('teachpoints', []):
-            # Detect coordinate type by key presence
-            if 'j1' in tp_data:
-                # Joint-space coordinates
+            # Detect coordinate type: "base" = new format, "j1" = legacy format
+            if 'base' in tp_data:
+                # New format: semantic joint names
                 coordinates: CartesianCoordinates | JointCoordinates = JointCoordinates(
-                    j1=float(tp_data['j1']),
-                    j2=float(tp_data['j2']),
-                    j3=float(tp_data['j3']),
-                    j4=float(tp_data['j4']),
-                    j5=float(tp_data['j5'])
+                    base=float(tp_data['base']),
+                    shoulder=float(tp_data['shoulder']),
+                    elbow=float(tp_data['elbow']),
+                    wrist=float(tp_data['wrist']),
+                    rail=float(tp_data.get('rail', 0.0))
+                )
+                orientation = None
+            elif 'j1' in tp_data:
+                # Legacy format: j1=rail, j2=base, j3=shoulder, j4=elbow, j5=wrist
+                coordinates = JointCoordinates(
+                    rail=float(tp_data['j1']),
+                    base=float(tp_data['j2']),
+                    shoulder=float(tp_data['j3']),
+                    elbow=float(tp_data['j4']),
+                    wrist=float(tp_data['j5'])
                 )
                 orientation = None
             else:
@@ -339,12 +368,13 @@ class TeachpointsRegistry:
                 coords = tp.coordinates
                 assert isinstance(coords, JointCoordinates)
                 tp_dict.update({
-                    'j1': coords.j1,
-                    'j2': coords.j2,
-                    'j3': coords.j3,
-                    'j4': coords.j4,
-                    'j5': coords.j5,
+                    'base': coords.base,
+                    'shoulder': coords.shoulder,
+                    'elbow': coords.elbow,
+                    'wrist': coords.wrist,
                 })
+                if coords.rail != 0.0:
+                    tp_dict['rail'] = coords.rail
             elif tp.is_cartesian():
                 coords = tp.coordinates
                 assert isinstance(coords, CartesianCoordinates)

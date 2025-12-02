@@ -92,17 +92,17 @@ class TestCrossoverDetection:
 
     @pytest.mark.asyncio
     async def test_right_to_left_needs_crossover(self):
-        backend = MockPLRBackend(initial_joints=[0, 170, 0, 150, 0, 75])  # elbow<180 = right
+        backend = MockPLRBackend(has_rail=False, initial_joints=[0, 170, 0, 150, 0, 75])  # elbow<180 = right
         wrapper = PLRTransporterBackendWrapper(backend)
-        tp = Teachpoint(name="left", coordinates=JointCoordinates(j4=220))  # elbow>180 = left
+        tp = Teachpoint(name="left", coordinates=JointCoordinates(elbow=220))  # elbow>180 = left
 
         assert await wrapper._needs_crossover(tp) is True
 
     @pytest.mark.asyncio
     async def test_same_orientation_no_crossover(self):
-        backend = MockPLRBackend(initial_joints=[0, 170, 0, 150, 0, 75])  # right
+        backend = MockPLRBackend(has_rail=False, initial_joints=[0, 170, 0, 150, 0, 75])  # right
         wrapper = PLRTransporterBackendWrapper(backend)
-        tp = Teachpoint(name="right", coordinates=JointCoordinates(j4=120))  # also right
+        tp = Teachpoint(name="right", coordinates=JointCoordinates(elbow=120))  # also right
 
         assert await wrapper._needs_crossover(tp) is False
 
@@ -112,7 +112,7 @@ class TestCrossoverManeuverSequence:
 
     @pytest.mark.asyncio
     async def test_crossover_from_right_sequence(self):
-        backend = MockPLRBackend(initial_joints=[0, 170, 0, 150, 0, 75])
+        backend = MockPLRBackend(has_rail=False, initial_joints=[0, 170, 0, 150, 0, 75])
         wrapper = PLRTransporterBackendWrapper(backend)
 
         await wrapper._perform_crossover_maneuver()
@@ -128,7 +128,7 @@ class TestCrossoverManeuverSequence:
 
     @pytest.mark.asyncio
     async def test_crossover_from_left_sequence(self):
-        backend = MockPLRBackend(initial_joints=[0, 170, 0, 220, 0, 75])  # left
+        backend = MockPLRBackend(has_rail=False, initial_joints=[0, 170, 0, 220, 0, 75])  # left
         wrapper = PLRTransporterBackendWrapper(backend)
 
         await wrapper._perform_crossover_maneuver()
@@ -162,5 +162,5 @@ class TestTeachpointOrientation:
             )
 
     def test_joint_no_orientation_ok(self):
-        tp = Teachpoint(name="joint", coordinates=JointCoordinates(j4=150))
+        tp = Teachpoint(name="joint", coordinates=JointCoordinates(elbow=150))
         assert tp.orientation is None
