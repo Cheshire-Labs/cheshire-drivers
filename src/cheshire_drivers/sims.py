@@ -4,7 +4,7 @@ from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
 
 from cheshire_drivers.interfaces import ICentrifugeDriver, IDelidderDriver, ILiquidHandlerDriver, IPlateWasherDriver, IProtocolRunnerDriver, IReaderDriver, ISealerDriver, IShakerDriver, IStorageDriver, ITempGettableDriver, ITempSettableDriver, ITransporterDriver, IWasteDriver
-from cheshire_drivers.teachpoints import Teachpoint
+from cheshire_drivers.teachpoints import CartesianCoordinates, JointCoordinates, Teachpoint
 
 logger = logging.getLogger("cheshire_drivers")
 
@@ -269,20 +269,39 @@ class SimTransporterDriver(ITransporterDriver):
     async def pick_at_coords(self, teachpoint: Teachpoint) -> None:
         """Pick plate at coordinates specified by teachpoint."""
         coords = teachpoint.coordinates
-        await self._sim(f"Driver: {self.name} picking at coords ({coords.x}, {coords.y}, {coords.z})...")
-        logger.info(f"Driver: {self.name} picked at coords ({coords.x}, {coords.y}, {coords.z})")
+        if isinstance(coords, CartesianCoordinates):
+            await self._sim(f"Driver: {self.name} picking at coords ({coords.x}, {coords.y}, {coords.z})...")
+            logger.info(f"Driver: {self.name} picked at coords ({coords.x}, {coords.y}, {coords.z})")
+        else:
+            assert isinstance(coords, JointCoordinates)
+            await self._sim(f"Driver: {self.name} picking at joint coords (j4={coords.j4})...")
+            logger.info(f"Driver: {self.name} picked at joint coords (j4={coords.j4})")
 
     async def place_at_coords(self, teachpoint: Teachpoint) -> None:
         """Place plate at coordinates specified by teachpoint."""
         coords = teachpoint.coordinates
-        await self._sim(f"Driver: {self.name} placing at coords ({coords.x}, {coords.y}, {coords.z})...")
-        logger.info(f"Driver: {self.name} placed at coords ({coords.x}, {coords.y}, {coords.z})")
+        if isinstance(coords, CartesianCoordinates):
+            await self._sim(f"Driver: {self.name} placing at coords ({coords.x}, {coords.y}, {coords.z})...")
+            logger.info(f"Driver: {self.name} placed at coords ({coords.x}, {coords.y}, {coords.z})")
+        else:
+            assert isinstance(coords, JointCoordinates)
+            await self._sim(f"Driver: {self.name} placing at joint coords (j4={coords.j4})...")
+            logger.info(f"Driver: {self.name} placed at joint coords (j4={coords.j4})")
 
     async def move_to_coords(self, teachpoint: Teachpoint) -> None:
         """Move to coordinates specified by teachpoint."""
         coords = teachpoint.coordinates
-        await self._sim(f"Driver: {self.name} moving to coords ({coords.x}, {coords.y}, {coords.z})...")
-        logger.info(f"Driver: {self.name} moved to coords ({coords.x}, {coords.y}, {coords.z})")
+        if isinstance(coords, CartesianCoordinates):
+            await self._sim(f"Driver: {self.name} moving to coords ({coords.x}, {coords.y}, {coords.z})...")
+            logger.info(f"Driver: {self.name} moved to coords ({coords.x}, {coords.y}, {coords.z})")
+        else:
+            assert isinstance(coords, JointCoordinates)
+            await self._sim(f"Driver: {self.name} moving to joint coords (j4={coords.j4})...")
+            logger.info(f"Driver: {self.name} moved to joint coords (j4={coords.j4})")
+
+    async def get_joint_position(self) -> JointCoordinates:
+        """Return simulated joint position (default safe position)."""
+        return JointCoordinates(j1=0.0, j2=170.0, j3=0.0, j4=180.0, j5=0.0)
 
 
 class StorageSimMixin(Sim, IStorageDriver):
