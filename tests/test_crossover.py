@@ -108,41 +108,79 @@ class TestCrossoverDetection:
 
 
 class TestCrossoverManeuverSequence:
-    """Verify crossover executes 5-step sequence with correct angles."""
+    """Verify crossover strategies work correctly."""
 
     @pytest.mark.asyncio
-    async def test_crossover_from_right_sequence(self):
+    async def test_default_strategy_is_2step(self):
+        """Verify default strategy is '2step'."""
         backend = MockPLRBackend(has_rail=False, initial_joints=[0, 170, 0, 135, 0, 75])
         wrapper = PLRTransporterBackendWrapper(backend)
 
         await wrapper._perform_crossover_maneuver()
 
-        moves = [c[1] for c in backend.calls if c[0] == 'move_one_axis']
-        assert len(moves) == 5
-
-        # Verify positions: shoulder→0, elbow→135, wrist→+180, elbow→180, elbow→225
-        assert moves[0] == (2, 0.0, 1)     # shoulder to 0
-        assert moves[1] == (3, 135.0, 1)   # elbow tuck (right safe)
-        assert moves[2] == (4, 180.0, 1)   # wrist to +180 (paired with right elbow)
-        assert moves[3] == (3, 180.0, 1)   # elbow under bar
-        assert moves[4] == (3, 225.0, 1)   # elbow exit (left safe)
+        move_to_calls = [c for c in backend.calls if c[0] == 'move_to']
+        assert len(move_to_calls) == 2
 
     @pytest.mark.asyncio
-    async def test_crossover_from_left_sequence(self):
-        backend = MockPLRBackend(has_rail=False, initial_joints=[0, 170, 0, 225, 0, 75])  # left
+    async def test_6step_strategy_from_right(self):
+        """Verify '6step' strategy sequence from right config."""
+        backend = MockPLRBackend(has_rail=False, initial_joints=[0, 170, 0, 135, 0, 75])
         wrapper = PLRTransporterBackendWrapper(backend)
 
-        await wrapper._perform_crossover_maneuver()
+        await wrapper._perform_crossover_maneuver(strategy="6step")
 
         moves = [c[1] for c in backend.calls if c[0] == 'move_one_axis']
-        assert len(moves) == 5
-
-        # Verify positions: shoulder→0, elbow→225, wrist→-180, elbow→180, elbow→135
+        assert len(moves) == 6
         assert moves[0] == (2, 0.0, 1)      # shoulder to 0
-        assert moves[1] == (3, 225.0, 1)    # elbow tuck (left safe)
-        assert moves[2] == (4, -180.0, 1)   # wrist to -180 (paired with left elbow)
-        assert moves[3] == (3, 180.0, 1)    # elbow under bar
-        assert moves[4] == (3, 135.0, 1)    # elbow exit (right safe)
+        assert moves[1] == (3, 90.0, 1)     # elbow extend outward (right)
+        assert moves[2] == (4, 180.0, 1)    # wrist to +180
+        assert moves[3] == (3, 135.0, 1)    # elbow tuck (right safe)
+        assert moves[4] == (3, 180.0, 1)    # elbow under bar
+        assert moves[5] == (3, 225.0, 1)    # elbow exit (left safe)
+
+    @pytest.mark.asyncio
+    async def test_6step_strategy_from_left(self):
+        """Verify '6step' strategy sequence from left config."""
+        # Order: [rail, base, shoulder, elbow, wrist, gripper]
+        backend = MockPLRBackend(has_rail=False, initial_joints=[0, 170, 0, 225, -75, 0])
+        wrapper = PLRTransporterBackendWrapper(backend)
+
+        await wrapper._perform_crossover_maneuver(strategy="6step")
+
+        moves = [c[1] for c in backend.calls if c[0] == 'move_one_axis']
+        assert len(moves) == 6
+        assert moves[0] == (2, 0.0, 1)       # shoulder to 0
+        assert moves[1] == (3, 270.0, 1)     # elbow extend outward (left)
+        assert moves[2] == (4, -180.0, 1)    # wrist to -180
+        assert moves[3] == (3, 225.0, 1)     # elbow tuck (left safe)
+        assert moves[4] == (3, 180.0, 1)     # elbow under bar
+        assert moves[5] == (3, 135.0, 1)     # elbow exit (right safe)
+
+    @pytest.mark.asyncio
+    async def test_2step_strategy_from_right(self):
+        """Verify '2step' strategy from right config."""
+        backend = MockPLRBackend(has_rail=False, initial_joints=[0, 170, 0, 135, 0, 75])
+        wrapper = PLRTransporterBackendWrapper(backend)
+
+        await wrapper._perform_crossover_maneuver(strategy="2step")
+
+        move_to_calls = [c[1] for c in backend.calls if c[0] == 'move_to']
+        assert len(move_to_calls) == 2
+        assert move_to_calls[0] == ([0.0, 170.0, 0.0, 180.0, -180.0, 75],)
+        assert move_to_calls[1] == ([0.0, 170.0, -20.0, 240.0, -225.0, 75],)
+
+    @pytest.mark.asyncio
+    async def test_2step_strategy_from_left(self):
+        """Verify '2step' strategy from left config."""
+        backend = MockPLRBackend(has_rail=False, initial_joints=[0, 170, 0, 225, 0, 50])
+        wrapper = PLRTransporterBackendWrapper(backend)
+
+        await wrapper._perform_crossover_maneuver(strategy="2step")
+
+        move_to_calls = [c[1] for c in backend.calls if c[0] == 'move_to']
+        assert len(move_to_calls) == 2
+        assert move_to_calls[0] == ([0.0, 170.0, 0.0, 180.0, -180.0, 50],)
+        assert move_to_calls[1] == ([0.0, 170.0, 10.0, 120.0, -130.0, 50],)
 
 
 class TestTeachpointOrientation:
