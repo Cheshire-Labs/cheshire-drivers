@@ -112,7 +112,7 @@ class TestCrossoverManeuverSequence:
 
     @pytest.mark.asyncio
     async def test_crossover_from_right_sequence(self):
-        backend = MockPLRBackend(has_rail=False, initial_joints=[0, 170, 0, 150, 0, 75])
+        backend = MockPLRBackend(has_rail=False, initial_joints=[0, 170, 0, 135, 0, 75])
         wrapper = PLRTransporterBackendWrapper(backend)
 
         await wrapper._perform_crossover_maneuver()
@@ -120,22 +120,29 @@ class TestCrossoverManeuverSequence:
         moves = [c[1] for c in backend.calls if c[0] == 'move_one_axis']
         assert len(moves) == 5
 
-        # Verify key positions: shoulder→0, elbow→150, wrist→0, elbow→180, elbow→210
-        assert moves[0] == (2, 0.0, 1)    # shoulder to 0
-        assert moves[1] == (3, 150.0, 1)  # elbow tuck (right safe)
-        assert moves[3] == (3, 180.0, 1)  # elbow under bar
-        assert moves[4] == (3, 210.0, 1)  # elbow exit (left safe)
+        # Verify positions: shoulder→0, elbow→135, wrist→+180, elbow→180, elbow→225
+        assert moves[0] == (2, 0.0, 1)     # shoulder to 0
+        assert moves[1] == (3, 135.0, 1)   # elbow tuck (right safe)
+        assert moves[2] == (4, 180.0, 1)   # wrist to +180 (paired with right elbow)
+        assert moves[3] == (3, 180.0, 1)   # elbow under bar
+        assert moves[4] == (3, 225.0, 1)   # elbow exit (left safe)
 
     @pytest.mark.asyncio
     async def test_crossover_from_left_sequence(self):
-        backend = MockPLRBackend(has_rail=False, initial_joints=[0, 170, 0, 220, 0, 75])  # left
+        backend = MockPLRBackend(has_rail=False, initial_joints=[0, 170, 0, 225, 0, 75])  # left
         wrapper = PLRTransporterBackendWrapper(backend)
 
         await wrapper._perform_crossover_maneuver()
 
         moves = [c[1] for c in backend.calls if c[0] == 'move_one_axis']
-        assert moves[1] == (3, 210.0, 1)  # elbow tuck (left safe)
-        assert moves[4] == (3, 150.0, 1)  # elbow exit (right safe)
+        assert len(moves) == 5
+
+        # Verify positions: shoulder→0, elbow→225, wrist→-180, elbow→180, elbow→135
+        assert moves[0] == (2, 0.0, 1)      # shoulder to 0
+        assert moves[1] == (3, 225.0, 1)    # elbow tuck (left safe)
+        assert moves[2] == (4, -180.0, 1)   # wrist to -180 (paired with left elbow)
+        assert moves[3] == (3, 180.0, 1)    # elbow under bar
+        assert moves[4] == (3, 135.0, 1)    # elbow exit (right safe)
 
 
 class TestTeachpointOrientation:
