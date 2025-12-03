@@ -90,11 +90,13 @@ class PLRTransporterBackendWrapper(ITransporterDriver):
     """
 
     # Crossover maneuver constants
-    # Safe elbow angles for tucking before crossing under the ulnar bar
-    SAFE_SHOULDER = 0.0     # Shoulder angle to point arm forward
-    SAFE_ELBOW_RIGHT = 150.0  # Safe angle when in right orientation (elbow < 180)
-    SAFE_ELBOW_LEFT = 210.0   # Safe angle when in left orientation (elbow > 180)
+    SAFE_SHOULDER = 0.0       # Shoulder angle to point arm forward
+    SAFE_ELBOW_RIGHT = 135.0  # 180 - 45 = right orientation tuck
+    SAFE_ELBOW_LEFT = 225.0   # 180 + 45 = left orientation tuck
     ELBOW_CROSSOVER = 180.0   # The "under the bar" position
+    # Wrist position is tied to elbow tuck position
+    SAFE_WRIST_FOR_LEFT_ELBOW = -180.0   # When elbow is at 225° (left), wrist must be -180°
+    SAFE_WRIST_FOR_RIGHT_ELBOW = 180.0   # When elbow is at 135° (right), wrist must be +180°
 
     def __init__(self, backend: PLRArmBackend) -> None:
         self._backend = backend
@@ -256,13 +258,15 @@ class PLRTransporterBackendWrapper(ITransporterDriver):
     async def _perform_crossover_maneuver(self) -> None:
         """Perform the crossover maneuver to change elbow orientation.
 
-        This safely moves the arm to switch from left to right orientation
-        (or vice versa) without collision.
+        Elbow tuck positions: 135° (right) or 225° (left)
+        Wrist must match elbow side to avoid collision:
+          - Elbow at 225° (left) → wrist at -180°
+          - Elbow at 135° (right) → wrist at +180°
 
         Sequence:
         1. Move shoulder to 0° (arm points forward, creating clearance)
-        2. Move elbow to safe tuck angle (150° if right, 210° if left)
-        3. Move wrist to 180° (tuck under ulnar bar)
+        2. Move elbow to safe tuck angle (135° if right, 225° if left)
+        3. Move wrist to paired position (-180° for left, +180° for right)
         4. Move elbow to 180° (straight, under humeral bar)
         5. Move elbow to opposite safe angle (switch orientation)
         """
@@ -274,21 +278,20 @@ class PLRTransporterBackendWrapper(ITransporterDriver):
         # Step 1: Move shoulder to 0 (arm points forward)
         await self._move_one_axis('shoulder', self.SAFE_SHOULDER)
 
-        # Step 2: Move elbow to safe tuck angle
+        # Step 2: Move elbow to safe tuck angle for CURRENT side
         tuck_angle = self.SAFE_ELBOW_RIGHT if currently_right else self.SAFE_ELBOW_LEFT
         await self._move_one_axis('elbow', tuck_angle)
 
-        # Step 3: Move wrist to 180 (tuck under ulnar bar)
-        await self._move_one_axis('wrist', 180.0)
+        # Step 3: Move wrist to match current elbow side
+        wrist_target = self.SAFE_WRIST_FOR_RIGHT_ELBOW if currently_right else self.SAFE_WRIST_FOR_LEFT_ELBOW
+        await self._move_one_axis('wrist', wrist_target)
 
         # Step 4: Move elbow to 180 (under humeral bar)
         await self._move_one_axis('elbow', self.ELBOW_CROSSOVER)
 
-        # Step 5: Move elbow to opposite safe angle
+        # Step 5: Move elbow to opposite safe angle (exit to other side)
         exit_angle = self.SAFE_ELBOW_LEFT if currently_right else self.SAFE_ELBOW_RIGHT
         await self._move_one_axis('elbow', exit_angle)
-
-        # Caller will continue to destination
 
     async def move_to_position(self, position_name: str) -> None:
         """Move robot to a position without picking/placing (for waypoints)."""
@@ -319,37 +322,25 @@ class PLRTransporterBackendWrapper(ITransporterDriver):
         Raises:
             ValueError: If access_type is invalid or required parameters are None
         """
-        # Validate access_type
         if tp.access_type is None:
             raise ValueError(f"Teachpoint '{tp.name}' has no access_type specified. Must be 'vertical' or 'horizontal'.")
 
         access_type_lower = tp.access_type.lower()
 
-        # Validate common parameter
-        if tp.gripper_offset is None:
-            raise ValueError(f"Teachpoint '{tp.name}' has no gripper_offset specified.")
-
         if access_type_lower == "vertical":
-            # Validate vertical-specific parameters
-            if tp.retract_distance is None:
-                raise ValueError(f"Teachpoint '{tp.name}' (vertical access) has no retract_distance specified.")
-
+            # vertical_clearance = distance above teachpoint for approach/depart
             return VerticalAccess(
-                approach_height_mm=tp.retract_distance,
-                clearance_mm=tp.retract_distance,
+                approach_height_mm=tp.vertical_clearance,
+                clearance_mm=tp.vertical_clearance,
                 gripper_offset_mm=tp.gripper_offset
             )
         elif access_type_lower == "horizontal":
-            # Validate horizontal-specific parameters
-            if tp.vertical_clearance is None:
-                raise ValueError(f"Teachpoint '{tp.name}' (horizontal access) has no vertical_clearance specified.")
-            if tp.z_above is None:
-                raise ValueError(f"Teachpoint '{tp.name}' (horizontal access) has no z_above specified.")
-
+            # horizontal_clearance = distance outside slot for approach/depart
+            # vertical_clearance = lift height after horizontal retract
             return HorizontalAccess(
-                approach_distance_mm=tp.vertical_clearance,
-                clearance_mm=tp.vertical_clearance,
-                lift_height_mm=tp.z_above,
+                approach_distance_mm=tp.horizontal_clearance,
+                clearance_mm=tp.horizontal_clearance,
+                lift_height_mm=tp.vertical_clearance,
                 gripper_offset_mm=tp.gripper_offset
             )
         else:
