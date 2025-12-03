@@ -138,18 +138,6 @@ class TestCrossoverManeuverSequence:
         assert moves[4] == (3, 150.0, 1)  # elbow exit (right safe)
 
 
-class TestWristUnwind:
-    """Verify wrist unwinds toward 0 during crossover."""
-
-    def test_wrist_unwind_positions(self):
-        backend = MockPLRBackend()
-        wrapper = PLRTransporterBackendWrapper(backend)
-
-        assert wrapper._get_nearest_wrist_unwind_position(200) == 180
-        assert wrapper._get_nearest_wrist_unwind_position(-500) == -360
-        assert wrapper._get_nearest_wrist_unwind_position(0) == 0
-
-
 class TestTeachpointOrientation:
     """Verify Cartesian teachpoints require orientation."""
 

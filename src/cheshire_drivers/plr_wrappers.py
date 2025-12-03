@@ -229,24 +229,6 @@ class PLRTransporterBackendWrapper(ITransporterDriver):
         # Type ignore: move_one_axis is defined on PreciseFlexBackend but not SCARABackend base
         await self._backend.move_one_axis(axis, position, 1)  # type: ignore[attr-defined]
 
-    def _get_nearest_wrist_unwind_position(self, current_wrist: float) -> float:
-        """Find the nearest multiple of 180° that's closer to 0.
-
-        This keeps the plate safe under the ulnar bar during crossover.
-        """
-        # Wrist range is approximately -950 to 950
-        # Find multiples of 180 within range
-        multiples = [i * 180 for i in range(-5, 6)]  # -900, -720, ..., 720, 900
-
-        # Filter to those closer to 0 than current position
-        closer_to_zero = [m for m in multiples if abs(m) <= abs(current_wrist)]
-
-        if not closer_to_zero:
-            return 0.0  # Default to 0 if nothing closer
-
-        # Return the one closest to current position (minimal movement)
-        return min(closer_to_zero, key=lambda m: abs(m - current_wrist))
-
     async def _needs_crossover(self, teachpoint: Teachpoint) -> bool:
         """Check if crossover maneuver is needed to reach teachpoint.
 
@@ -274,19 +256,18 @@ class PLRTransporterBackendWrapper(ITransporterDriver):
     async def _perform_crossover_maneuver(self) -> None:
         """Perform the crossover maneuver to change elbow orientation.
 
-        This safely moves the gripper under the ulnar bar to switch from
-        left to right orientation (or vice versa) without collision.
+        This safely moves the arm to switch from left to right orientation
+        (or vice versa) without collision.
 
         Sequence:
         1. Move shoulder to 0° (arm points forward, creating clearance)
         2. Move elbow to safe tuck angle (150° if right, 210° if left)
-        3. Unwind wrist toward 0° (keep plate safe under ulnar bar)
-        4. Move elbow to 180° (straight, under the ulnar bar)
+        3. Move wrist to 180° (tuck under ulnar bar)
+        4. Move elbow to 180° (straight, under humeral bar)
         5. Move elbow to opposite safe angle (switch orientation)
         """
         current_joints = await self.get_joint_position()
         current_elbow = current_joints.elbow
-        current_wrist = current_joints.wrist
 
         currently_right = current_elbow < 180
 
@@ -297,11 +278,10 @@ class PLRTransporterBackendWrapper(ITransporterDriver):
         tuck_angle = self.SAFE_ELBOW_RIGHT if currently_right else self.SAFE_ELBOW_LEFT
         await self._move_one_axis('elbow', tuck_angle)
 
-        # Step 3: Unwind wrist toward 0
-        wrist_target = self._get_nearest_wrist_unwind_position(current_wrist)
-        await self._move_one_axis('wrist', wrist_target)
+        # Step 3: Move wrist to 180 (tuck under ulnar bar)
+        await self._move_one_axis('wrist', 180.0)
 
-        # Step 4: Move elbow to 180 (under the ulnar bar)
+        # Step 4: Move elbow to 180 (under humeral bar)
         await self._move_one_axis('elbow', self.ELBOW_CROSSOVER)
 
         # Step 5: Move elbow to opposite safe angle
