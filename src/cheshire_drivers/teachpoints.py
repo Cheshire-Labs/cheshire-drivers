@@ -92,6 +92,13 @@ class Teachpoint:
                 f"Cartesian teachpoint '{self.name}' must specify orientation (left/right)"
             )
 
+        # Validate: Pick/place locations (with access_type) require Cartesian for access patterns
+        if self.access_type is not None and not self.is_cartesian():
+            raise ValueError(
+                f"Teachpoint '{self.name}' has access_type but uses joint coordinates. "
+                "Pick/place locations require Cartesian coordinates for access patterns."
+            )
+
     def is_joint_space(self) -> bool:
         """Returns True if this teachpoint uses joint-space coordinates."""
         return isinstance(self.coordinates, JointCoordinates)
