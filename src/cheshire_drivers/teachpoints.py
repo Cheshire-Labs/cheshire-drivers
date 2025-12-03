@@ -6,23 +6,33 @@ class AccessConfig:
     """Defines how a robotic arm approaches and retracts from a location.
 
     Access configs are defined in JSON teachpoint files and can be referenced by multiple
-    teachpoints to avoid duplication. Parameters specify vertical or horizontal access strategies.
+    teachpoints to avoid duplication.
+
+    For VERTICAL access (stacks, deck positions):
+        - vertical_clearance: Distance (mm) above teachpoint for approach/depart
+        - gripper_offset: Added to clearance when holding plate
+
+    For HORIZONTAL access (hotel-style carriers):
+        - horizontal_clearance: Distance (mm) outside slot for approach/depart
+        - vertical_clearance: Distance (mm) to lift after horizontal retract
+        - gripper_offset: Added to clearance when holding plate
     """
     def __init__(
         self,
         name: str,
         access_type: str,
         gripper_offset: float = 20.0,
-        retract_distance: float = 100.0,
-        vertical_clearance: float = 50.0,
-        z_above: float = 10.0
+        vertical_clearance: float = 20.0,
+        horizontal_clearance: float = 100.0,
     ):
         self.name = name
         self.access_type = access_type  # "vertical" or "horizontal"
-        self.gripper_offset = gripper_offset  # Gripper height compensation (always used)
-        self.retract_distance = retract_distance  # For vertical access: how far to pull back
-        self.vertical_clearance = vertical_clearance  # For horizontal access: clearance distance
-        self.z_above = z_above  # For horizontal access: extra height above nest
+        # Added to clearance when holding plate to compensate for plate thickness
+        self.gripper_offset = gripper_offset
+        # For VERTICAL: distance above teachpoint; For HORIZONTAL: lift height after retract
+        self.vertical_clearance = vertical_clearance
+        # For HORIZONTAL only: distance outside slot for approach/depart
+        self.horizontal_clearance = horizontal_clearance
 
 class CartesianCoordinates:
     def __init__(self, x: float, y: float, z: float, yaw: float, pitch: float, roll: float):
@@ -64,9 +74,8 @@ class Teachpoint:
         orientation: str | None = None,
         access_type: str | None = None,
         gripper_offset: float = 20.0,
-        retract_distance: float = 100.0,
-        vertical_clearance: float = 50.0,
-        z_above: float = 10.0,
+        vertical_clearance: float = 20.0,
+        horizontal_clearance: float = 100.0,
         gateway: str | None = None
     ) -> None:
         self.name = name
@@ -74,12 +83,12 @@ class Teachpoint:
         self.orientation = orientation
         # "vertical" or "horizontal" for pick/place destinations; None for waypoints
         self.access_type = access_type
-        self.gripper_offset = gripper_offset  # Gripper height compensation (always used)
-        # For VERTICAL access only:
-        self.retract_distance = retract_distance  # How far to pull back horizontally
-        # For HORIZONTAL access only:
-        self.vertical_clearance = vertical_clearance  # Vertical clearance distance
-        self.z_above = z_above  # Extra height above nest slot
+        # Added to clearance when holding plate to compensate for plate thickness
+        self.gripper_offset = gripper_offset
+        # For VERTICAL: distance above teachpoint; For HORIZONTAL: lift height after retract
+        self.vertical_clearance = vertical_clearance
+        # For HORIZONTAL only: distance outside slot for approach/depart
+        self.horizontal_clearance = horizontal_clearance
         # Gateway waypoint - robot must pass through this teachpoint before reaching destination
         self.gateway = gateway
 
@@ -139,9 +148,8 @@ class Teachpoint:
             result.update({
                 "access_type": self.access_type,
                 "gripper_offset": self.gripper_offset,
-                "retract_distance": self.retract_distance,
                 "vertical_clearance": self.vertical_clearance,
-                "z_above": self.z_above,
+                "horizontal_clearance": self.horizontal_clearance,
             })
 
         if self.gateway is not None:
@@ -196,9 +204,8 @@ class Teachpoint:
             orientation=orientation,
             access_type=data.get("access_type"),
             gripper_offset=float(data.get("gripper_offset", 20.0)),
-            retract_distance=float(data.get("retract_distance", 100.0)),
-            vertical_clearance=float(data.get("vertical_clearance", 50.0)),
-            z_above=float(data.get("z_above", 10.0)),
+            vertical_clearance=float(data.get("vertical_clearance", 20.0)),
+            horizontal_clearance=float(data.get("horizontal_clearance", 100.0)),
             gateway=data.get("gateway"),
         )
 
@@ -215,18 +222,19 @@ class Teachpoint:
                     name=name,
                     access_type=cfg_data['access_type'],
                     gripper_offset=float(cfg_data.get('gripper_offset', 20.0)),
-                    retract_distance=float(cfg_data.get('retract_distance', 100.0)),
-                    vertical_clearance=float(cfg_data.get('vertical_clearance', 50.0)),
-                    z_above=float(cfg_data.get('z_above', 10.0))
+                    vertical_clearance=float(cfg_data.get('vertical_clearance', 20.0)),
+                    horizontal_clearance=float(cfg_data.get('horizontal_clearance', 100.0)),
                 )
 
-        # Add hardcoded defaults
-        access_configs['default_vertical'] = AccessConfig(
-            'default_vertical', 'vertical', 20.0, 100.0, 50.0, 10.0
-        )
-        access_configs['default_horizontal'] = AccessConfig(
-            'default_horizontal', 'horizontal', 20.0, 100.0, 50.0, 10.0
-        )
+        # Add hardcoded defaults only if not defined in JSON
+        if 'default_vertical' not in access_configs:
+            access_configs['default_vertical'] = AccessConfig(
+                'default_vertical', 'vertical', 20.0, 20.0, 50.0
+            )
+        if 'default_horizontal' not in access_configs:
+            access_configs['default_horizontal'] = AccessConfig(
+                'default_horizontal', 'horizontal', 20.0, 20.0, 100.0
+            )
 
         # Parse teachpoints and resolve access config references
         teachpoints: List[Teachpoint] = []
@@ -274,16 +282,14 @@ class Teachpoint:
                 cfg = access_configs[config_name]
                 access_type = cfg.access_type
                 gripper_offset = cfg.gripper_offset
-                retract_distance = cfg.retract_distance
                 vertical_clearance = cfg.vertical_clearance
-                z_above = cfg.z_above
+                horizontal_clearance = cfg.horizontal_clearance
             else:
                 # Waypoint without access config
                 access_type = None
                 gripper_offset = 20.0
-                retract_distance = 100.0
-                vertical_clearance = 50.0
-                z_above = 10.0
+                vertical_clearance = 20.0
+                horizontal_clearance = 100.0
 
             # Create teachpoint with resolved access params
             tp = Teachpoint(
@@ -292,9 +298,8 @@ class Teachpoint:
                 orientation=orientation,
                 access_type=access_type,
                 gripper_offset=gripper_offset,
-                retract_distance=retract_distance,
                 vertical_clearance=vertical_clearance,
-                z_above=z_above,
+                horizontal_clearance=horizontal_clearance,
                 gateway=tp_data.get('gateway', None)
             )
             tp._access_config_name = config_name
@@ -360,9 +365,8 @@ class TeachpointsRegistry:
                 access_configs_dict[config_name] = {
                     'access_type': tp.access_type,
                     'gripper_offset': tp.gripper_offset,
-                    'retract_distance': tp.retract_distance,
                     'vertical_clearance': tp.vertical_clearance,
-                    'z_above': tp.z_above
+                    'horizontal_clearance': tp.horizontal_clearance,
                 }
 
         # Build teachpoints list with access references
