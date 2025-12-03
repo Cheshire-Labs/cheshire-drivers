@@ -1,5 +1,5 @@
 import asyncio
-from typing import List
+from typing import List, Literal
 
 from cheshire_drivers.interfaces import ICentrifugeDriver, ISealerDriver, IShakerDriver, ITransporterDriver
 from pylabrobot.sealing.backend import SealerBackend as PLRSealerBackend
@@ -63,26 +63,22 @@ def convert_cartesian_to_plr_coord(
     )
 
 
-def convert_joint_to_plr_list(
-    coords: JointCoordinates,
-    gripper_value: float
-) -> list[float]:
+def convert_joint_to_plr_list(coords: JointCoordinates) -> list[float]:
     """Convert JointCoordinates to PLR joint list format.
 
     Args:
-        coords: Joint coordinates (j1-j5)
-        gripper_value: Current gripper position to preserve
+        coords: Joint coordinates with all 6 joints
 
     Returns:
         List of 6 floats: [rail, base, shoulder, elbow, wrist, gripper]
     """
     return [
-        coords.j1,   # rail
-        coords.j2,   # base
-        coords.j3,   # shoulder
-        coords.j4,   # elbow
-        coords.j5,   # wrist
-        gripper_value
+        coords.rail,
+        coords.base,
+        coords.shoulder,
+        coords.elbow,
+        coords.wrist,
+        coords.gripper
     ]
 
 
@@ -93,11 +89,18 @@ class PLRTransporterBackendWrapper(ITransporterDriver):
     and automatic crossover maneuvers when changing elbow orientation.
     """
 
-    # Crossover maneuver constants
-    # Safe elbow angles for tucking before crossing under the ulnar bar
-    SAFE_ELBOW_RIGHT = 150.0  # Safe angle when in right orientation (elbow < 180)
-    SAFE_ELBOW_LEFT = 210.0   # Safe angle when in left orientation (elbow > 180)
-    ELBOW_CROSSOVER = 180.0   # The "under the bar" position
+    # Crossover joint positions [rail, base, shoulder, elbow, wrist, gripper]
+    SAFE_LOC = (0.0, 170.0, 0.0, 180.0, -180.0, 0.0)
+    RIGHTY_J = (0.0, 170.0, 10.0, 120.0, -130.0, 0.0)
+    LEFTY_J = (0.0, 170.0, -20.0, 240.0, -225.0, 0.0)
+
+    # Legacy 6-step crossover constants (for _perform_crossover_6step)
+    SAFE_SHOULDER = 0.0
+    ELBOW_EXTEND_RIGHT = 90.0
+    ELBOW_EXTEND_LEFT = 270.0
+    SAFE_ELBOW_RIGHT = 135.0
+    SAFE_ELBOW_LEFT = 225.0
+    ELBOW_CROSSOVER = 180.0
 
     def __init__(self, backend: PLRArmBackend) -> None:
         self._backend = backend
@@ -157,13 +160,21 @@ class PLRTransporterBackendWrapper(ITransporterDriver):
         coords = tp.coordinates
         assert isinstance(coords, JointCoordinates)
 
-        # Get current gripper position to preserve it
-        # Note: get_joint_position() returns 6 values [rail, base, shoulder, elbow, wrist, gripper]
-        # Using index access for type compatibility with JointCoords (List[float])
+        # Get current gripper position to preserve it (teachpoints don't store gripper)
         current_joints = await self._backend.get_joint_position()
-        gripper_value = list(current_joints)[5]  # gripper is 6th element (index 5)
+        current_gripper = list(current_joints)[5]  # gripper is 6th element (index 5)
 
-        joint_list = convert_joint_to_plr_list(coords, gripper_value)
+        # Create JointCoordinates with current gripper state
+        coords_with_gripper = JointCoordinates(
+            rail=coords.rail,
+            base=coords.base,
+            shoulder=coords.shoulder,
+            elbow=coords.elbow,
+            wrist=coords.wrist,
+            gripper=current_gripper
+        )
+
+        joint_list = convert_joint_to_plr_list(coords_with_gripper)
         await self._backend.move_to(joint_list)
 
     async def get_joint_position(self) -> JointCoordinates:
@@ -172,11 +183,12 @@ class PLRTransporterBackendWrapper(ITransporterDriver):
         # PLR returns joint values as iterable: [rail, base, shoulder, elbow, wrist, gripper]
         joints_list = list(plr_joints)
         return JointCoordinates(
-            j1=joints_list[0],  # rail
-            j2=joints_list[1],  # base
-            j3=joints_list[2],  # shoulder
-            j4=joints_list[3],  # elbow
-            j5=joints_list[4]   # wrist
+            rail=joints_list[0],
+            base=joints_list[1],
+            shoulder=joints_list[2],
+            elbow=joints_list[3],
+            wrist=joints_list[4],
+            gripper=joints_list[5]
         )
 
     def _get_axis_index(self, joint_name: str) -> int:
@@ -186,21 +198,21 @@ class PLRTransporterBackendWrapper(ITransporterDriver):
             joint_name: One of 'rail', 'base', 'shoulder', 'elbow', 'wrist', 'gripper'
 
         Returns:
-            The axis number to use with move_one_axis command.
+            The axis number to use with move_one_axis command (1-based per Brooks TCS API).
         """
         has_rail = getattr(self._backend, '_has_rail', True)
 
         if has_rail:
-            # With rail: 0=rail, 1=base, 2=shoulder, 3=elbow, 4=wrist, 5=gripper
+            # With rail: 1=rail, 2=base, 3=shoulder, 4=elbow, 5=wrist, 6=gripper
             axis_map = {
-                'rail': 0, 'base': 1, 'shoulder': 2,
-                'elbow': 3, 'wrist': 4, 'gripper': 5
+                'rail': 1, 'base': 2, 'shoulder': 3,
+                'elbow': 4, 'wrist': 5, 'gripper': 6
             }
         else:
-            # Without rail: 0=base, 1=shoulder, 2=elbow, 3=wrist, 4=gripper
+            # Without rail: 1=base, 2=shoulder, 3=elbow, 4=wrist, 5=gripper
             axis_map = {
-                'base': 0, 'shoulder': 1, 'elbow': 2,
-                'wrist': 3, 'gripper': 4
+                'base': 1, 'shoulder': 2, 'elbow': 3,
+                'wrist': 4, 'gripper': 5
             }
 
         if joint_name not in axis_map:
@@ -223,24 +235,6 @@ class PLRTransporterBackendWrapper(ITransporterDriver):
         # Type ignore: move_one_axis is defined on PreciseFlexBackend but not SCARABackend base
         await self._backend.move_one_axis(axis, position, 1)  # type: ignore[attr-defined]
 
-    def _get_nearest_wrist_unwind_position(self, current_wrist: float) -> float:
-        """Find the nearest multiple of 180° that's closer to 0.
-
-        This keeps the plate safe under the ulnar bar during crossover.
-        """
-        # Wrist range is approximately -950 to 950
-        # Find multiples of 180 within range
-        multiples = [i * 180 for i in range(-5, 6)]  # -900, -720, ..., 720, 900
-
-        # Filter to those closer to 0 than current position
-        closer_to_zero = [m for m in multiples if abs(m) <= abs(current_wrist)]
-
-        if not closer_to_zero:
-            return 0.0  # Default to 0 if nothing closer
-
-        # Return the one closest to current position (minimal movement)
-        return min(closer_to_zero, key=lambda m: abs(m - current_wrist))
-
     async def _needs_crossover(self, teachpoint: Teachpoint) -> bool:
         """Check if crossover maneuver is needed to reach teachpoint.
 
@@ -248,12 +242,12 @@ class PLRTransporterBackendWrapper(ITransporterDriver):
         (left <-> right) to reach the target position.
         """
         current_joints = await self.get_joint_position()
-        current_elbow = current_joints.j4
+        current_elbow = current_joints.elbow
         current_is_left = current_elbow > 180
 
         if teachpoint.is_joint_space():
             assert isinstance(teachpoint.coordinates, JointCoordinates)
-            target_is_left = teachpoint.coordinates.j4 > 180
+            target_is_left = teachpoint.coordinates.elbow > 180
         else:
             # Cartesian - orientation is required
             if teachpoint.orientation is None:
@@ -265,44 +259,78 @@ class PLRTransporterBackendWrapper(ITransporterDriver):
 
         return current_is_left != target_is_left
 
-    async def _perform_crossover_maneuver(self) -> None:
+    async def _perform_crossover_maneuver(
+        self,
+        strategy: Literal["2step", "6step"] = "2step"
+    ) -> None:
         """Perform the crossover maneuver to change elbow orientation.
 
-        This safely moves the gripper under the ulnar bar to switch from
-        left to right orientation (or vice versa) without collision.
+        Args:
+            strategy: Which crossover algorithm to use:
+                - "2step": Move to SafeLoc then target config (default)
+                - "6step": Single-axis moves with plate clearance extension
+        """
+        if strategy == "2step":
+            await self._crossover_2step()
+        elif strategy == "6step":
+            await self._crossover_6step()
+
+    async def _crossover_2step(self) -> None:
+        """Crossover using 2 full joint moves to predefined positions.
 
         Sequence:
-        1. Move shoulder to 0° (arm points forward, creating clearance)
-        2. Move elbow to safe tuck angle (150° if right, 210° if left)
-        3. Unwind wrist toward 0° (keep plate safe under ulnar bar)
-        4. Move elbow to 180° (straight, under the ulnar bar)
-        5. Move elbow to opposite safe angle (switch orientation)
+        1. Move to SafeLoc (elbow at 180, wrist at -180)
+        2. Move to target config (Righty_j or Lefty_j)
         """
         current_joints = await self.get_joint_position()
-        current_elbow = current_joints.j4
-        current_wrist = current_joints.j5
+        currently_right = current_joints.elbow < 180
+        current_gripper = current_joints.gripper
 
+        # Step 1: Move to SafeLoc
+        safe = list(self.SAFE_LOC)
+        safe[5] = current_gripper
+        await self._backend.move_to(safe)
+
+        # Step 2: Move to target config
+        target = list(self.LEFTY_J if currently_right else self.RIGHTY_J)
+        target[5] = current_gripper
+        await self._backend.move_to(target)
+
+    async def _crossover_6step(self) -> None:
+        """6-step crossover using single-axis moves with plate clearance.
+
+        Extends elbow outward first to give plate clearance before rotating wrist.
+        Works mechanically but may cause wrist spin issues with TCS due to
+        joint-space vs tool-space mismatch.
+
+        Sequence:
+        1. Shoulder → 0°
+        2. Elbow → 90° or 270° (extend outward)
+        3. Wrist → ±180° (shortest path)
+        4. Elbow → 135° or 225° (tuck)
+        5. Elbow → 180° (cross under bar)
+        6. Elbow → exit to opposite side
+        """
+        current_joints = await self.get_joint_position()
+        current_elbow = current_joints.elbow
+        current_wrist = current_joints.wrist
         currently_right = current_elbow < 180
 
-        # Step 1: Move shoulder to 0 (arm points forward)
-        await self._move_one_axis('shoulder', 0.0)
+        await self._move_one_axis('shoulder', self.SAFE_SHOULDER)
 
-        # Step 2: Move elbow to safe tuck angle
+        extend_angle = self.ELBOW_EXTEND_RIGHT if currently_right else self.ELBOW_EXTEND_LEFT
+        await self._move_one_axis('elbow', extend_angle)
+
+        wrist_target = 180.0 if current_wrist >= 0 else -180.0
+        await self._move_one_axis('wrist', wrist_target)
+
         tuck_angle = self.SAFE_ELBOW_RIGHT if currently_right else self.SAFE_ELBOW_LEFT
         await self._move_one_axis('elbow', tuck_angle)
 
-        # Step 3: Unwind wrist toward 0
-        wrist_target = self._get_nearest_wrist_unwind_position(current_wrist)
-        await self._move_one_axis('wrist', wrist_target)
-
-        # Step 4: Move elbow to 180 (under the ulnar bar)
         await self._move_one_axis('elbow', self.ELBOW_CROSSOVER)
 
-        # Step 5: Move elbow to opposite safe angle
         exit_angle = self.SAFE_ELBOW_LEFT if currently_right else self.SAFE_ELBOW_RIGHT
         await self._move_one_axis('elbow', exit_angle)
-
-        # Caller will continue to destination
 
     async def move_to_position(self, position_name: str) -> None:
         """Move robot to a position without picking/placing (for waypoints)."""
@@ -333,37 +361,25 @@ class PLRTransporterBackendWrapper(ITransporterDriver):
         Raises:
             ValueError: If access_type is invalid or required parameters are None
         """
-        # Validate access_type
         if tp.access_type is None:
             raise ValueError(f"Teachpoint '{tp.name}' has no access_type specified. Must be 'vertical' or 'horizontal'.")
 
         access_type_lower = tp.access_type.lower()
 
-        # Validate common parameter
-        if tp.gripper_offset is None:
-            raise ValueError(f"Teachpoint '{tp.name}' has no gripper_offset specified.")
-
         if access_type_lower == "vertical":
-            # Validate vertical-specific parameters
-            if tp.retract_distance is None:
-                raise ValueError(f"Teachpoint '{tp.name}' (vertical access) has no retract_distance specified.")
-
+            # vertical_clearance = distance above teachpoint for approach/depart
             return VerticalAccess(
-                approach_height_mm=tp.retract_distance,
-                clearance_mm=tp.retract_distance,
+                approach_height_mm=tp.vertical_clearance,
+                clearance_mm=tp.vertical_clearance,
                 gripper_offset_mm=tp.gripper_offset
             )
         elif access_type_lower == "horizontal":
-            # Validate horizontal-specific parameters
-            if tp.vertical_clearance is None:
-                raise ValueError(f"Teachpoint '{tp.name}' (horizontal access) has no vertical_clearance specified.")
-            if tp.z_above is None:
-                raise ValueError(f"Teachpoint '{tp.name}' (horizontal access) has no z_above specified.")
-
+            # horizontal_clearance = distance outside slot for approach/depart
+            # vertical_clearance = lift height after horizontal retract
             return HorizontalAccess(
-                approach_distance_mm=tp.vertical_clearance,
-                clearance_mm=tp.vertical_clearance,
-                lift_height_mm=tp.z_above,
+                approach_distance_mm=tp.horizontal_clearance,
+                clearance_mm=tp.horizontal_clearance,
+                lift_height_mm=tp.vertical_clearance,
                 gripper_offset_mm=tp.gripper_offset
             )
         else:

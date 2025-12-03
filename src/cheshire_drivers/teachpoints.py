@@ -6,23 +6,33 @@ class AccessConfig:
     """Defines how a robotic arm approaches and retracts from a location.
 
     Access configs are defined in JSON teachpoint files and can be referenced by multiple
-    teachpoints to avoid duplication. Parameters specify vertical or horizontal access strategies.
+    teachpoints to avoid duplication.
+
+    For VERTICAL access (stacks, deck positions):
+        - vertical_clearance: Distance (mm) above teachpoint for approach/depart
+        - gripper_offset: Added to clearance when holding plate
+
+    For HORIZONTAL access (hotel-style carriers):
+        - horizontal_clearance: Distance (mm) outside slot for approach/depart
+        - vertical_clearance: Distance (mm) to lift after horizontal retract
+        - gripper_offset: Added to clearance when holding plate
     """
     def __init__(
         self,
         name: str,
         access_type: str,
         gripper_offset: float = 20.0,
-        retract_distance: float = 100.0,
-        vertical_clearance: float = 50.0,
-        z_above: float = 10.0
+        vertical_clearance: float = 20.0,
+        horizontal_clearance: float = 100.0,
     ):
         self.name = name
         self.access_type = access_type  # "vertical" or "horizontal"
-        self.gripper_offset = gripper_offset  # Gripper height compensation (always used)
-        self.retract_distance = retract_distance  # For vertical access: how far to pull back
-        self.vertical_clearance = vertical_clearance  # For horizontal access: clearance distance
-        self.z_above = z_above  # For horizontal access: extra height above nest
+        # Added to clearance when holding plate to compensate for plate thickness
+        self.gripper_offset = gripper_offset
+        # For VERTICAL: distance above teachpoint; For HORIZONTAL: lift height after retract
+        self.vertical_clearance = vertical_clearance
+        # For HORIZONTAL only: distance outside slot for approach/depart
+        self.horizontal_clearance = horizontal_clearance
 
 class CartesianCoordinates:
     def __init__(self, x: float, y: float, z: float, yaw: float, pitch: float, roll: float):
@@ -35,18 +45,26 @@ class CartesianCoordinates:
 
 
 class JointCoordinates:
-    """Generic joint coordinates using j1-j5 naming.
+    """Joint coordinates using semantic naming - all 6 joints.
 
-    j6 (typically gripper) is excluded - controlled separately via open/close commands.
-    The PLR wrapper maps these to robot-specific joint names.
+    Rail defaults to 0.0 for robots without rail.
+    Gripper defaults to 0.0 (teachpoints typically don't store gripper state).
     """
-    def __init__(self, j1: float = 0.0, j2: float = 0.0, j3: float = 0.0,
-                 j4: float = 0.0, j5: float = 0.0):
-        self.j1 = j1  # For PreciseFlex: rail
-        self.j2 = j2  # For PreciseFlex: base
-        self.j3 = j3  # For PreciseFlex: shoulder
-        self.j4 = j4  # For PreciseFlex: elbow
-        self.j5 = j5  # For PreciseFlex: wrist
+    def __init__(
+        self,
+        rail: float = 0.0,
+        base: float = 0.0,
+        shoulder: float = 0.0,
+        elbow: float = 0.0,
+        wrist: float = 0.0,
+        gripper: float = 0.0
+    ):
+        self.rail = rail
+        self.base = base
+        self.shoulder = shoulder
+        self.elbow = elbow
+        self.wrist = wrist
+        self.gripper = gripper
 
 class Teachpoint:
     def __init__(
@@ -56,9 +74,8 @@ class Teachpoint:
         orientation: str | None = None,
         access_type: str | None = None,
         gripper_offset: float = 20.0,
-        retract_distance: float = 100.0,
-        vertical_clearance: float = 50.0,
-        z_above: float = 10.0,
+        vertical_clearance: float = 20.0,
+        horizontal_clearance: float = 100.0,
         gateway: str | None = None
     ) -> None:
         self.name = name
@@ -66,12 +83,12 @@ class Teachpoint:
         self.orientation = orientation
         # "vertical" or "horizontal" for pick/place destinations; None for waypoints
         self.access_type = access_type
-        self.gripper_offset = gripper_offset  # Gripper height compensation (always used)
-        # For VERTICAL access only:
-        self.retract_distance = retract_distance  # How far to pull back horizontally
-        # For HORIZONTAL access only:
-        self.vertical_clearance = vertical_clearance  # Vertical clearance distance
-        self.z_above = z_above  # Extra height above nest slot
+        # Added to clearance when holding plate to compensate for plate thickness
+        self.gripper_offset = gripper_offset
+        # For VERTICAL: distance above teachpoint; For HORIZONTAL: lift height after retract
+        self.vertical_clearance = vertical_clearance
+        # For HORIZONTAL only: distance outside slot for approach/depart
+        self.horizontal_clearance = horizontal_clearance
         # Gateway waypoint - robot must pass through this teachpoint before reaching destination
         self.gateway = gateway
 
@@ -82,6 +99,13 @@ class Teachpoint:
         if self.is_cartesian() and self.orientation is None:
             raise ValueError(
                 f"Cartesian teachpoint '{self.name}' must specify orientation (left/right)"
+            )
+
+        # Validate: Pick/place locations (with access_type) require Cartesian for access patterns
+        if self.access_type is not None and not self.is_cartesian():
+            raise ValueError(
+                f"Teachpoint '{self.name}' has access_type but uses joint coordinates. "
+                "Pick/place locations require Cartesian coordinates for access patterns."
             )
 
     def is_joint_space(self) -> bool:
@@ -100,12 +124,13 @@ class Teachpoint:
             coords = self.coordinates
             assert isinstance(coords, JointCoordinates)
             result.update({
-                "j1": coords.j1,
-                "j2": coords.j2,
-                "j3": coords.j3,
-                "j4": coords.j4,
-                "j5": coords.j5,
+                "base": coords.base,
+                "shoulder": coords.shoulder,
+                "elbow": coords.elbow,
+                "wrist": coords.wrist,
             })
+            if coords.rail != 0.0:
+                result["rail"] = coords.rail
         elif self.is_cartesian():
             coords = self.coordinates
             assert isinstance(coords, CartesianCoordinates)
@@ -123,9 +148,8 @@ class Teachpoint:
             result.update({
                 "access_type": self.access_type,
                 "gripper_offset": self.gripper_offset,
-                "retract_distance": self.retract_distance,
                 "vertical_clearance": self.vertical_clearance,
-                "z_above": self.z_above,
+                "horizontal_clearance": self.horizontal_clearance,
             })
 
         if self.gateway is not None:
@@ -140,14 +164,24 @@ class Teachpoint:
         Detects coordinate type by presence of 'j1' (joint-space) or 'x' (Cartesian) keys.
         Defaults to joint-space if neither is present.
         """
-        # Detect coordinate type
-        if "j1" in data:
+        # Detect coordinate type: "base" = new format, "j1" = legacy format
+        if "base" in data:
             coordinates: CartesianCoordinates | JointCoordinates | None = JointCoordinates(
-                j1=float(data["j1"]),
-                j2=float(data["j2"]),
-                j3=float(data["j3"]),
-                j4=float(data["j4"]),
-                j5=float(data["j5"]),
+                base=float(data["base"]),
+                shoulder=float(data["shoulder"]),
+                elbow=float(data["elbow"]),
+                wrist=float(data["wrist"]),
+                rail=float(data.get("rail", 0.0)),
+            )
+            orientation = None
+        elif "j1" in data:
+            # Legacy format: j1=rail, j2=base, j3=shoulder, j4=elbow, j5=wrist
+            coordinates = JointCoordinates(
+                rail=float(data["j1"]),
+                base=float(data["j2"]),
+                shoulder=float(data["j3"]),
+                elbow=float(data["j4"]),
+                wrist=float(data["j5"]),
             )
             orientation = None
         elif "x" in data:
@@ -170,9 +204,8 @@ class Teachpoint:
             orientation=orientation,
             access_type=data.get("access_type"),
             gripper_offset=float(data.get("gripper_offset", 20.0)),
-            retract_distance=float(data.get("retract_distance", 100.0)),
-            vertical_clearance=float(data.get("vertical_clearance", 50.0)),
-            z_above=float(data.get("z_above", 10.0)),
+            vertical_clearance=float(data.get("vertical_clearance", 20.0)),
+            horizontal_clearance=float(data.get("horizontal_clearance", 100.0)),
             gateway=data.get("gateway"),
         )
 
@@ -189,31 +222,42 @@ class Teachpoint:
                     name=name,
                     access_type=cfg_data['access_type'],
                     gripper_offset=float(cfg_data.get('gripper_offset', 20.0)),
-                    retract_distance=float(cfg_data.get('retract_distance', 100.0)),
-                    vertical_clearance=float(cfg_data.get('vertical_clearance', 50.0)),
-                    z_above=float(cfg_data.get('z_above', 10.0))
+                    vertical_clearance=float(cfg_data.get('vertical_clearance', 20.0)),
+                    horizontal_clearance=float(cfg_data.get('horizontal_clearance', 100.0)),
                 )
 
-        # Add hardcoded defaults
-        access_configs['default_vertical'] = AccessConfig(
-            'default_vertical', 'vertical', 20.0, 100.0, 50.0, 10.0
-        )
-        access_configs['default_horizontal'] = AccessConfig(
-            'default_horizontal', 'horizontal', 20.0, 100.0, 50.0, 10.0
-        )
+        # Add hardcoded defaults only if not defined in JSON
+        if 'default_vertical' not in access_configs:
+            access_configs['default_vertical'] = AccessConfig(
+                'default_vertical', 'vertical', 20.0, 20.0, 50.0
+            )
+        if 'default_horizontal' not in access_configs:
+            access_configs['default_horizontal'] = AccessConfig(
+                'default_horizontal', 'horizontal', 20.0, 20.0, 100.0
+            )
 
         # Parse teachpoints and resolve access config references
         teachpoints: List[Teachpoint] = []
         for tp_data in data.get('teachpoints', []):
-            # Detect coordinate type by key presence
-            if 'j1' in tp_data:
-                # Joint-space coordinates
+            # Detect coordinate type: "base" = new format, "j1" = legacy format
+            if 'base' in tp_data:
+                # New format: semantic joint names
                 coordinates: CartesianCoordinates | JointCoordinates = JointCoordinates(
-                    j1=float(tp_data['j1']),
-                    j2=float(tp_data['j2']),
-                    j3=float(tp_data['j3']),
-                    j4=float(tp_data['j4']),
-                    j5=float(tp_data['j5'])
+                    base=float(tp_data['base']),
+                    shoulder=float(tp_data['shoulder']),
+                    elbow=float(tp_data['elbow']),
+                    wrist=float(tp_data['wrist']),
+                    rail=float(tp_data.get('rail', 0.0))
+                )
+                orientation = None
+            elif 'j1' in tp_data:
+                # Legacy format: j1=rail, j2=base, j3=shoulder, j4=elbow, j5=wrist
+                coordinates = JointCoordinates(
+                    rail=float(tp_data['j1']),
+                    base=float(tp_data['j2']),
+                    shoulder=float(tp_data['j3']),
+                    elbow=float(tp_data['j4']),
+                    wrist=float(tp_data['j5'])
                 )
                 orientation = None
             else:
@@ -238,16 +282,14 @@ class Teachpoint:
                 cfg = access_configs[config_name]
                 access_type = cfg.access_type
                 gripper_offset = cfg.gripper_offset
-                retract_distance = cfg.retract_distance
                 vertical_clearance = cfg.vertical_clearance
-                z_above = cfg.z_above
+                horizontal_clearance = cfg.horizontal_clearance
             else:
                 # Waypoint without access config
                 access_type = None
                 gripper_offset = 20.0
-                retract_distance = 100.0
-                vertical_clearance = 50.0
-                z_above = 10.0
+                vertical_clearance = 20.0
+                horizontal_clearance = 100.0
 
             # Create teachpoint with resolved access params
             tp = Teachpoint(
@@ -256,9 +298,8 @@ class Teachpoint:
                 orientation=orientation,
                 access_type=access_type,
                 gripper_offset=gripper_offset,
-                retract_distance=retract_distance,
                 vertical_clearance=vertical_clearance,
-                z_above=z_above,
+                horizontal_clearance=horizontal_clearance,
                 gateway=tp_data.get('gateway', None)
             )
             tp._access_config_name = config_name
@@ -324,9 +365,8 @@ class TeachpointsRegistry:
                 access_configs_dict[config_name] = {
                     'access_type': tp.access_type,
                     'gripper_offset': tp.gripper_offset,
-                    'retract_distance': tp.retract_distance,
                     'vertical_clearance': tp.vertical_clearance,
-                    'z_above': tp.z_above
+                    'horizontal_clearance': tp.horizontal_clearance,
                 }
 
         # Build teachpoints list with access references
@@ -339,12 +379,13 @@ class TeachpointsRegistry:
                 coords = tp.coordinates
                 assert isinstance(coords, JointCoordinates)
                 tp_dict.update({
-                    'j1': coords.j1,
-                    'j2': coords.j2,
-                    'j3': coords.j3,
-                    'j4': coords.j4,
-                    'j5': coords.j5,
+                    'base': coords.base,
+                    'shoulder': coords.shoulder,
+                    'elbow': coords.elbow,
+                    'wrist': coords.wrist,
                 })
+                if coords.rail != 0.0:
+                    tp_dict['rail'] = coords.rail
             elif tp.is_cartesian():
                 coords = tp.coordinates
                 assert isinstance(coords, CartesianCoordinates)

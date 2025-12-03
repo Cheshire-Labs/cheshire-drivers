@@ -274,8 +274,8 @@ class SimTransporterDriver(ITransporterDriver):
             logger.info(f"Driver: {self.name} picked at coords ({coords.x}, {coords.y}, {coords.z})")
         else:
             assert isinstance(coords, JointCoordinates)
-            await self._sim(f"Driver: {self.name} picking at joint coords (j4={coords.j4})...")
-            logger.info(f"Driver: {self.name} picked at joint coords (j4={coords.j4})")
+            await self._sim(f"Driver: {self.name} picking at joint coords (elbow={coords.elbow})...")
+            logger.info(f"Driver: {self.name} picked at joint coords (elbow={coords.elbow})")
 
     async def place_at_coords(self, teachpoint: Teachpoint) -> None:
         """Place plate at coordinates specified by teachpoint."""
@@ -285,8 +285,8 @@ class SimTransporterDriver(ITransporterDriver):
             logger.info(f"Driver: {self.name} placed at coords ({coords.x}, {coords.y}, {coords.z})")
         else:
             assert isinstance(coords, JointCoordinates)
-            await self._sim(f"Driver: {self.name} placing at joint coords (j4={coords.j4})...")
-            logger.info(f"Driver: {self.name} placed at joint coords (j4={coords.j4})")
+            await self._sim(f"Driver: {self.name} placing at joint coords (elbow={coords.elbow})...")
+            logger.info(f"Driver: {self.name} placed at joint coords (elbow={coords.elbow})")
 
     async def move_to_coords(self, teachpoint: Teachpoint) -> None:
         """Move to coordinates specified by teachpoint."""
@@ -296,12 +296,12 @@ class SimTransporterDriver(ITransporterDriver):
             logger.info(f"Driver: {self.name} moved to coords ({coords.x}, {coords.y}, {coords.z})")
         else:
             assert isinstance(coords, JointCoordinates)
-            await self._sim(f"Driver: {self.name} moving to joint coords (j4={coords.j4})...")
-            logger.info(f"Driver: {self.name} moved to joint coords (j4={coords.j4})")
+            await self._sim(f"Driver: {self.name} moving to joint coords (elbow={coords.elbow})...")
+            logger.info(f"Driver: {self.name} moved to joint coords (elbow={coords.elbow})")
 
     async def get_joint_position(self) -> JointCoordinates:
         """Return simulated joint position (default safe position)."""
-        return JointCoordinates(j1=0.0, j2=170.0, j3=0.0, j4=180.0, j5=0.0)
+        return JointCoordinates(rail=0.0, base=170.0, shoulder=0.0, elbow=180.0, wrist=0.0, gripper=0.0)
 
 
 class StorageSimMixin(Sim, IStorageDriver):

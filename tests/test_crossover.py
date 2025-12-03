@@ -92,62 +92,95 @@ class TestCrossoverDetection:
 
     @pytest.mark.asyncio
     async def test_right_to_left_needs_crossover(self):
-        backend = MockPLRBackend(initial_joints=[0, 170, 0, 150, 0, 75])  # elbow<180 = right
+        backend = MockPLRBackend(has_rail=False, initial_joints=[0, 170, 0, 150, 0, 75])  # elbow<180 = right
         wrapper = PLRTransporterBackendWrapper(backend)
-        tp = Teachpoint(name="left", coordinates=JointCoordinates(j4=220))  # elbow>180 = left
+        tp = Teachpoint(name="left", coordinates=JointCoordinates(elbow=220))  # elbow>180 = left
 
         assert await wrapper._needs_crossover(tp) is True
 
     @pytest.mark.asyncio
     async def test_same_orientation_no_crossover(self):
-        backend = MockPLRBackend(initial_joints=[0, 170, 0, 150, 0, 75])  # right
+        backend = MockPLRBackend(has_rail=False, initial_joints=[0, 170, 0, 150, 0, 75])  # right
         wrapper = PLRTransporterBackendWrapper(backend)
-        tp = Teachpoint(name="right", coordinates=JointCoordinates(j4=120))  # also right
+        tp = Teachpoint(name="right", coordinates=JointCoordinates(elbow=120))  # also right
 
         assert await wrapper._needs_crossover(tp) is False
 
 
 class TestCrossoverManeuverSequence:
-    """Verify crossover executes 5-step sequence with correct angles."""
+    """Verify crossover strategies work correctly."""
 
     @pytest.mark.asyncio
-    async def test_crossover_from_right_sequence(self):
-        backend = MockPLRBackend(initial_joints=[0, 170, 0, 150, 0, 75])
+    async def test_default_strategy_is_2step(self):
+        """Verify default strategy is '2step'."""
+        backend = MockPLRBackend(has_rail=False, initial_joints=[0, 170, 0, 135, 0, 75])
         wrapper = PLRTransporterBackendWrapper(backend)
 
         await wrapper._perform_crossover_maneuver()
 
-        moves = [c[1] for c in backend.calls if c[0] == 'move_one_axis']
-        assert len(moves) == 5
-
-        # Verify key positions: shoulder→0, elbow→150, wrist→0, elbow→180, elbow→210
-        assert moves[0] == (2, 0.0, 1)    # shoulder to 0
-        assert moves[1] == (3, 150.0, 1)  # elbow tuck (right safe)
-        assert moves[3] == (3, 180.0, 1)  # elbow under bar
-        assert moves[4] == (3, 210.0, 1)  # elbow exit (left safe)
+        move_to_calls = [c for c in backend.calls if c[0] == 'move_to']
+        assert len(move_to_calls) == 2
 
     @pytest.mark.asyncio
-    async def test_crossover_from_left_sequence(self):
-        backend = MockPLRBackend(initial_joints=[0, 170, 0, 220, 0, 75])  # left
+    async def test_6step_strategy_from_right(self):
+        """Verify '6step' strategy sequence from right config."""
+        backend = MockPLRBackend(has_rail=False, initial_joints=[0, 170, 0, 135, 0, 75])
         wrapper = PLRTransporterBackendWrapper(backend)
 
-        await wrapper._perform_crossover_maneuver()
+        await wrapper._perform_crossover_maneuver(strategy="6step")
 
         moves = [c[1] for c in backend.calls if c[0] == 'move_one_axis']
-        assert moves[1] == (3, 210.0, 1)  # elbow tuck (left safe)
-        assert moves[4] == (3, 150.0, 1)  # elbow exit (right safe)
+        assert len(moves) == 6
+        assert moves[0] == (2, 0.0, 1)      # shoulder to 0
+        assert moves[1] == (3, 90.0, 1)     # elbow extend outward (right)
+        assert moves[2] == (4, 180.0, 1)    # wrist to +180
+        assert moves[3] == (3, 135.0, 1)    # elbow tuck (right safe)
+        assert moves[4] == (3, 180.0, 1)    # elbow under bar
+        assert moves[5] == (3, 225.0, 1)    # elbow exit (left safe)
 
-
-class TestWristUnwind:
-    """Verify wrist unwinds toward 0 during crossover."""
-
-    def test_wrist_unwind_positions(self):
-        backend = MockPLRBackend()
+    @pytest.mark.asyncio
+    async def test_6step_strategy_from_left(self):
+        """Verify '6step' strategy sequence from left config."""
+        # Order: [rail, base, shoulder, elbow, wrist, gripper]
+        backend = MockPLRBackend(has_rail=False, initial_joints=[0, 170, 0, 225, -75, 0])
         wrapper = PLRTransporterBackendWrapper(backend)
 
-        assert wrapper._get_nearest_wrist_unwind_position(200) == 180
-        assert wrapper._get_nearest_wrist_unwind_position(-500) == -360
-        assert wrapper._get_nearest_wrist_unwind_position(0) == 0
+        await wrapper._perform_crossover_maneuver(strategy="6step")
+
+        moves = [c[1] for c in backend.calls if c[0] == 'move_one_axis']
+        assert len(moves) == 6
+        assert moves[0] == (2, 0.0, 1)       # shoulder to 0
+        assert moves[1] == (3, 270.0, 1)     # elbow extend outward (left)
+        assert moves[2] == (4, -180.0, 1)    # wrist to -180
+        assert moves[3] == (3, 225.0, 1)     # elbow tuck (left safe)
+        assert moves[4] == (3, 180.0, 1)     # elbow under bar
+        assert moves[5] == (3, 135.0, 1)     # elbow exit (right safe)
+
+    @pytest.mark.asyncio
+    async def test_2step_strategy_from_right(self):
+        """Verify '2step' strategy from right config."""
+        backend = MockPLRBackend(has_rail=False, initial_joints=[0, 170, 0, 135, 0, 75])
+        wrapper = PLRTransporterBackendWrapper(backend)
+
+        await wrapper._perform_crossover_maneuver(strategy="2step")
+
+        move_to_calls = [c[1] for c in backend.calls if c[0] == 'move_to']
+        assert len(move_to_calls) == 2
+        assert move_to_calls[0] == ([0.0, 170.0, 0.0, 180.0, -180.0, 75],)
+        assert move_to_calls[1] == ([0.0, 170.0, -20.0, 240.0, -225.0, 75],)
+
+    @pytest.mark.asyncio
+    async def test_2step_strategy_from_left(self):
+        """Verify '2step' strategy from left config."""
+        backend = MockPLRBackend(has_rail=False, initial_joints=[0, 170, 0, 225, 0, 50])
+        wrapper = PLRTransporterBackendWrapper(backend)
+
+        await wrapper._perform_crossover_maneuver(strategy="2step")
+
+        move_to_calls = [c[1] for c in backend.calls if c[0] == 'move_to']
+        assert len(move_to_calls) == 2
+        assert move_to_calls[0] == ([0.0, 170.0, 0.0, 180.0, -180.0, 50],)
+        assert move_to_calls[1] == ([0.0, 170.0, 10.0, 120.0, -130.0, 50],)
 
 
 class TestTeachpointOrientation:
@@ -162,5 +195,5 @@ class TestTeachpointOrientation:
             )
 
     def test_joint_no_orientation_ok(self):
-        tp = Teachpoint(name="joint", coordinates=JointCoordinates(j4=150))
+        tp = Teachpoint(name="joint", coordinates=JointCoordinates(elbow=150))
         assert tp.orientation is None
