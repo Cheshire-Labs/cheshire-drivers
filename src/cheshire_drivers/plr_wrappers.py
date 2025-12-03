@@ -1,5 +1,5 @@
 import asyncio
-from typing import List
+from typing import List, Literal
 
 from cheshire_drivers.interfaces import ICentrifugeDriver, ISealerDriver, IShakerDriver, ITransporterDriver
 from pylabrobot.sealing.backend import SealerBackend as PLRSealerBackend
@@ -89,14 +89,18 @@ class PLRTransporterBackendWrapper(ITransporterDriver):
     and automatic crossover maneuvers when changing elbow orientation.
     """
 
-    # Crossover maneuver constants
-    SAFE_SHOULDER = 0.0       # Shoulder angle to point arm forward
-    SAFE_ELBOW_RIGHT = 135.0  # 180 - 45 = right orientation tuck
-    SAFE_ELBOW_LEFT = 225.0   # 180 + 45 = left orientation tuck
-    ELBOW_CROSSOVER = 180.0   # The "under the bar" position
-    # Wrist position is tied to elbow tuck position
-    SAFE_WRIST_FOR_LEFT_ELBOW = -180.0   # When elbow is at 225° (left), wrist must be -180°
-    SAFE_WRIST_FOR_RIGHT_ELBOW = 180.0   # When elbow is at 135° (right), wrist must be +180°
+    # Crossover joint positions [rail, base, shoulder, elbow, wrist, gripper]
+    SAFE_LOC = (0.0, 170.0, 0.0, 180.0, -180.0, 0.0)
+    RIGHTY_J = (0.0, 170.0, 10.0, 120.0, -130.0, 0.0)
+    LEFTY_J = (0.0, 170.0, -20.0, 240.0, -225.0, 0.0)
+
+    # Legacy 6-step crossover constants (for _perform_crossover_6step)
+    SAFE_SHOULDER = 0.0
+    ELBOW_EXTEND_RIGHT = 90.0
+    ELBOW_EXTEND_LEFT = 270.0
+    SAFE_ELBOW_RIGHT = 135.0
+    SAFE_ELBOW_LEFT = 225.0
+    ELBOW_CROSSOVER = 180.0
 
     def __init__(self, backend: PLRArmBackend) -> None:
         self._backend = backend
@@ -255,41 +259,76 @@ class PLRTransporterBackendWrapper(ITransporterDriver):
 
         return current_is_left != target_is_left
 
-    async def _perform_crossover_maneuver(self) -> None:
+    async def _perform_crossover_maneuver(
+        self,
+        strategy: Literal["2step", "6step"] = "2step"
+    ) -> None:
         """Perform the crossover maneuver to change elbow orientation.
 
-        Elbow tuck positions: 135° (right) or 225° (left)
-        Wrist must match elbow side to avoid collision:
-          - Elbow at 225° (left) → wrist at -180°
-          - Elbow at 135° (right) → wrist at +180°
+        Args:
+            strategy: Which crossover algorithm to use:
+                - "2step": Move to SafeLoc then target config (default)
+                - "6step": Single-axis moves with plate clearance extension
+        """
+        if strategy == "2step":
+            await self._crossover_2step()
+        elif strategy == "6step":
+            await self._crossover_6step()
+
+    async def _crossover_2step(self) -> None:
+        """Crossover using 2 full joint moves to predefined positions.
 
         Sequence:
-        1. Move shoulder to 0° (arm points forward, creating clearance)
-        2. Move elbow to safe tuck angle (135° if right, 225° if left)
-        3. Move wrist to paired position (-180° for left, +180° for right)
-        4. Move elbow to 180° (straight, under humeral bar)
-        5. Move elbow to opposite safe angle (switch orientation)
+        1. Move to SafeLoc (elbow at 180, wrist at -180)
+        2. Move to target config (Righty_j or Lefty_j)
+        """
+        current_joints = await self.get_joint_position()
+        currently_right = current_joints.elbow < 180
+        current_gripper = current_joints.gripper
+
+        # Step 1: Move to SafeLoc
+        safe = list(self.SAFE_LOC)
+        safe[5] = current_gripper
+        await self._backend.move_to(safe)
+
+        # Step 2: Move to target config
+        target = list(self.LEFTY_J if currently_right else self.RIGHTY_J)
+        target[5] = current_gripper
+        await self._backend.move_to(target)
+
+    async def _crossover_6step(self) -> None:
+        """6-step crossover using single-axis moves with plate clearance.
+
+        Extends elbow outward first to give plate clearance before rotating wrist.
+        Works mechanically but may cause wrist spin issues with TCS due to
+        joint-space vs tool-space mismatch.
+
+        Sequence:
+        1. Shoulder → 0°
+        2. Elbow → 90° or 270° (extend outward)
+        3. Wrist → ±180° (shortest path)
+        4. Elbow → 135° or 225° (tuck)
+        5. Elbow → 180° (cross under bar)
+        6. Elbow → exit to opposite side
         """
         current_joints = await self.get_joint_position()
         current_elbow = current_joints.elbow
-
+        current_wrist = current_joints.wrist
         currently_right = current_elbow < 180
 
-        # Step 1: Move shoulder to 0 (arm points forward)
         await self._move_one_axis('shoulder', self.SAFE_SHOULDER)
 
-        # Step 2: Move elbow to safe tuck angle for CURRENT side
+        extend_angle = self.ELBOW_EXTEND_RIGHT if currently_right else self.ELBOW_EXTEND_LEFT
+        await self._move_one_axis('elbow', extend_angle)
+
+        wrist_target = 180.0 if current_wrist >= 0 else -180.0
+        await self._move_one_axis('wrist', wrist_target)
+
         tuck_angle = self.SAFE_ELBOW_RIGHT if currently_right else self.SAFE_ELBOW_LEFT
         await self._move_one_axis('elbow', tuck_angle)
 
-        # Step 3: Move wrist to match current elbow side
-        wrist_target = self.SAFE_WRIST_FOR_RIGHT_ELBOW if currently_right else self.SAFE_WRIST_FOR_LEFT_ELBOW
-        await self._move_one_axis('wrist', wrist_target)
-
-        # Step 4: Move elbow to 180 (under humeral bar)
         await self._move_one_axis('elbow', self.ELBOW_CROSSOVER)
 
-        # Step 5: Move elbow to opposite safe angle (exit to other side)
         exit_angle = self.SAFE_ELBOW_LEFT if currently_right else self.SAFE_ELBOW_RIGHT
         await self._move_one_axis('elbow', exit_angle)
 
