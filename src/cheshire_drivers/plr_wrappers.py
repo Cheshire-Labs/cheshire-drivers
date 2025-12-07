@@ -89,6 +89,9 @@ class PLRTransporterBackendWrapper(ITransporterDriver):
     and automatic crossover maneuvers when changing elbow orientation.
     """
 
+    # Default plate width for SBS microplates (85.48mm nominal)
+    DEFAULT_PLATE_WIDTH = 85.0
+
     # Crossover joint positions [rail, base, shoulder, elbow, wrist, gripper]
     SAFE_LOC = (0.0, 170.0, 0.0, 180.0, -180.0, 0.0)
     RIGHTY_J = (0.0, 170.0, 10.0, 120.0, -130.0, 0.0)
@@ -403,7 +406,7 @@ class PLRTransporterBackendWrapper(ITransporterDriver):
         assert isinstance(tp.coordinates, CartesianCoordinates)
         plr_coords = convert_cartesian_to_plr_coord(tp.coordinates, tp.orientation)
         access = self._teachpoint_to_plr_access(tp)
-        await self._backend.pick_plate(plr_coords, access)
+        await self._backend.pick_plate(plr_coords, self.DEFAULT_PLATE_WIDTH, access)
 
         # Traverse gateway path in reverse (exit)
         for waypoint in reversed(gateway_path):
@@ -450,7 +453,7 @@ class PLRTransporterBackendWrapper(ITransporterDriver):
         assert isinstance(teachpoint.coordinates, CartesianCoordinates)
         plr_coords = convert_cartesian_to_plr_coord(teachpoint.coordinates, teachpoint.orientation)
         access = self._teachpoint_to_plr_access(teachpoint)
-        await self._backend.pick_plate(plr_coords, access)
+        await self._backend.pick_plate(plr_coords, self.DEFAULT_PLATE_WIDTH, access)
 
     async def place_at_coords(self, teachpoint: Teachpoint) -> None:
         """Place plate at coordinates specified by teachpoint."""
