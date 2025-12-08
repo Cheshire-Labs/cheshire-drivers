@@ -43,6 +43,16 @@ class CartesianCoordinates:
         self.pitch = pitch
         self.roll = roll
 
+    def to_dict(self) -> Dict[str, float]:
+        return {
+            "x": self.x,
+            "y": self.y,
+            "z": self.z,
+            "yaw": self.yaw,
+            "pitch": self.pitch,
+            "roll": self.roll,
+        }
+
 
 class JointCoordinates:
     """Joint coordinates using semantic naming - all 6 joints.
@@ -65,6 +75,16 @@ class JointCoordinates:
         self.elbow = elbow
         self.wrist = wrist
         self.gripper = gripper
+
+    def to_dict(self) -> Dict[str, float]:
+        return {
+            "rail": self.rail,
+            "base": self.base,
+            "shoulder": self.shoulder,
+            "elbow": self.elbow,
+            "wrist": self.wrist,
+            "gripper": self.gripper,
+        }
 
 class Teachpoint:
     def __init__(

@@ -242,6 +242,16 @@ class ITransporterDriver(ABC):
         """
         ...
 
+    @abstractmethod
+    async def open_gripper(self) -> None:
+        """Open gripper to default width for standard plates."""
+        ...
+
+    @abstractmethod
+    async def close_gripper(self) -> None:
+        """Close gripper to grip a plate."""
+        ...
+
 
 class IStorageDriver(BaseDriver, ABC):
     pass

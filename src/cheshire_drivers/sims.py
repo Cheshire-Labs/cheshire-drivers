@@ -318,6 +318,17 @@ class SimTransporterDriver(ITransporterDriver):
         await self._sim(f"Driver: {self.name} setting free mode: {axes}...")
         logger.info(f"Driver: {self.name} free mode set to {axes}")
 
+    async def open_gripper(self) -> None:
+        """Open gripper to default width for standard plates."""
+        plate_width = 75.0  # Internal default for standard plates
+        await self._sim(f"Driver: {self.name} opening gripper to {plate_width}mm...")
+        logger.info(f"Driver: {self.name} gripper opened to {plate_width}mm")
+
+    async def close_gripper(self) -> None:
+        """Close gripper."""
+        await self._sim(f"Driver: {self.name} closing gripper...")
+        logger.info(f"Driver: {self.name} gripper closed")
+
 
 class StorageSimMixin(Sim, IStorageDriver):
     pass
