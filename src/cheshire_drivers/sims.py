@@ -329,6 +329,24 @@ class SimTransporterDriver(ITransporterDriver):
         await self._sim(f"Driver: {self.name} closing gripper...")
         logger.info(f"Driver: {self.name} gripper closed")
 
+    async def get_cartesian_position(self) -> CartesianCoordinates:
+        """Return simulated Cartesian position."""
+        return CartesianCoordinates(x=0.0, y=0.0, z=0.0, roll=0.0, pitch=0.0, yaw=0.0)
+
+    async def set_speed(self, speed: float) -> None:
+        """Set movement speed as percentage of maximum (0.0 to 1.0)."""
+        await self._sim(f"Driver: {self.name} setting speed to {speed * 100}%...")
+        logger.info(f"Driver: {self.name} speed set to {speed * 100}%")
+
+    async def get_speed(self) -> float:
+        """Get current movement speed setting as percentage (0.0 to 1.0)."""
+        return 0.5  # Default 50% speed
+
+    async def halt(self) -> None:
+        """Emergency stop - immediately halt all movement."""
+        await self._sim(f"Driver: {self.name} HALT!")
+        logger.warning(f"Driver: {self.name} emergency halt executed")
+
 
 class StorageSimMixin(Sim, IStorageDriver):
     pass
