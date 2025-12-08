@@ -90,7 +90,7 @@ class PLRTransporterBackendWrapper(ITransporterDriver):
     """
 
     # Default plate width for SBS microplates (85.48mm nominal)
-    DEFAULT_PLATE_WIDTH = 85.0
+    DEFAULT_PLATE_WIDTH = 75.0
 
     # Crossover joint positions [rail, base, shoulder, elbow, wrist, gripper]
     SAFE_LOC = (0.0, 170.0, 0.0, 180.0, -180.0, 0.0)
@@ -132,6 +132,12 @@ class PLRTransporterBackendWrapper(ITransporterDriver):
     async def move_to_safe(self) -> None:
         """Moves the transporter to a safe position."""
         await self._backend.move_to_safe()
+
+    async def open_gripper(self) -> None:
+        return await self._backend.open_gripper(83.0)
+    
+    async def close_gripper(self) -> None:
+        return await self._backend.close_gripper(83.0)
 
     def _resolve_gateway_path(self, teachpoint: Teachpoint) -> List[Teachpoint]:
         """Resolve gateway chain, returning ordered list of waypoints to traverse.

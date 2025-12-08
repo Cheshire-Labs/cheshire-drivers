@@ -1,9 +1,9 @@
 import asyncio
 import logging
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional, Union
 
-from cheshire_drivers.interfaces import ICentrifugeDriver, IDelidderDriver, ILiquidHandlerDriver, IPlateWasherDriver, IProtocolRunnerDriver, IReaderDriver, ISealerDriver, IShakerDriver, IStorageDriver, ITempGettableDriver, ITempSettableDriver, ITransporterDriver, IWasteDriver
+from cheshire_drivers.interfaces import AxisName, ICentrifugeDriver, IDelidderDriver, ILiquidHandlerDriver, IPlateWasherDriver, IProtocolRunnerDriver, IReaderDriver, ISealerDriver, IShakerDriver, IStorageDriver, ITempGettableDriver, ITempSettableDriver, ITransporterDriver, IWasteDriver
 from cheshire_drivers.teachpoints import CartesianCoordinates, JointCoordinates, Teachpoint
 
 logger = logging.getLogger("cheshire_drivers")
@@ -302,6 +302,32 @@ class SimTransporterDriver(ITransporterDriver):
     async def get_joint_position(self) -> JointCoordinates:
         """Return simulated joint position (default safe position)."""
         return JointCoordinates(rail=0.0, base=170.0, shoulder=0.0, elbow=180.0, wrist=0.0, gripper=0.0)
+
+    async def move_single_axis(self, axis: AxisName, position: float) -> None:
+        """Move a single axis to absolute position."""
+        await self._sim(f"Driver: {self.name} moving {axis} to {position}...")
+        logger.info(f"Driver: {self.name} moved {axis} to {position}")
+
+    async def move_single_axis_relative(self, axis: AxisName, distance: float) -> None:
+        """Move a single axis by relative distance from current position."""
+        await self._sim(f"Driver: {self.name} moving {axis} by {distance}...")
+        logger.info(f"Driver: {self.name} moved {axis} by {distance}")
+
+    async def set_free_mode(self, axes: Union[List[AxisName], Literal["all", "none"]]) -> None:
+        """Enable/disable free mode (freedrive) for specified axes."""
+        await self._sim(f"Driver: {self.name} setting free mode: {axes}...")
+        logger.info(f"Driver: {self.name} free mode set to {axes}")
+
+    async def open_gripper(self) -> None:
+        """Open gripper to default width for standard plates."""
+        plate_width = 75.0  # Internal default for standard plates
+        await self._sim(f"Driver: {self.name} opening gripper to {plate_width}mm...")
+        logger.info(f"Driver: {self.name} gripper opened to {plate_width}mm")
+
+    async def close_gripper(self) -> None:
+        """Close gripper."""
+        await self._sim(f"Driver: {self.name} closing gripper...")
+        logger.info(f"Driver: {self.name} gripper closed")
 
 
 class StorageSimMixin(Sim, IStorageDriver):
