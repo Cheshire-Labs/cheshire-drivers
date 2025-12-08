@@ -1,7 +1,7 @@
 import asyncio
-from typing import List, Literal
+from typing import List, Literal, Union
 
-from cheshire_drivers.interfaces import ICentrifugeDriver, ISealerDriver, IShakerDriver, ITransporterDriver
+from cheshire_drivers.interfaces import ICentrifugeDriver, ISealerDriver, IShakerDriver, ITransporterDriver, AxisName
 from pylabrobot.sealing.backend import SealerBackend as PLRSealerBackend
 from pylabrobot.shaking.backend import ShakerBackend as PLRShakerBackend
 from pylabrobot.centrifuge.backend import CentrifugeBackend as PLRCentrifugeBackend
@@ -475,6 +475,32 @@ class PLRTransporterBackendWrapper(ITransporterDriver):
         assert isinstance(teachpoint.coordinates, CartesianCoordinates)
         plr_coords = convert_cartesian_to_plr_coord(teachpoint.coordinates, teachpoint.orientation)
         await self._backend.move_to(plr_coords)
+
+    async def move_single_axis(self, axis: AxisName, position: float) -> None:
+        """Move a single axis to absolute position."""
+        axis_num = self._get_axis_index(axis)
+        # Use profile_index 1 (standard motion profile)
+        await self._backend.move_one_axis(axis_num, position, 1)  # type: ignore[attr-defined]
+
+    async def move_single_axis_relative(self, axis: AxisName, distance: float) -> None:
+        """Move a single axis by relative distance from current position."""
+        current = await self.get_joint_position()
+        current_pos = getattr(current, axis)
+        await self.move_single_axis(axis, current_pos + distance)
+
+    async def set_free_mode(self, axes: Union[List[AxisName], Literal["all", "none"]]) -> None:
+        """Enable/disable free mode (freedrive) for specified axes."""
+        if axes == "none":
+            await self._backend.set_free_mode(False)  # type: ignore[attr-defined]
+        elif axes == "all":
+            await self._backend.set_free_mode(True, 0)  # type: ignore[attr-defined]
+        elif isinstance(axes, list) and len(axes) == 1:
+            axis_num = self._get_axis_index(axes[0])
+            await self._backend.set_free_mode(True, axis_num)  # type: ignore[attr-defined]
+        else:
+            # PLR only supports one axis at a time, enable all for multiple
+            await self._backend.set_free_mode(True, 0)  # type: ignore[attr-defined]
+
 
 class PLRSealerBackendWrapper(ISealerDriver):
     def __init__(self, backend: PLRSealerBackend):

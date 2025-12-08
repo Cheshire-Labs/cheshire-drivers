@@ -13,54 +13,112 @@ pip install -e .
 ```python
 from cheshire_drivers import (
     # Interfaces
+    BaseDriver,
     IShakerDriver,
-    ITransporterDriver,
+    ISealerDriver,
     ICentrifugeDriver,
+    ITransporterDriver,
+    IReaderDriver,
+    IDelidderDriver,
+    IStorageDriver,
+    IPlateWasherDriver,
+    ILiquidHandlerDriver,
 
     # PLR Wrappers
     PLRShakerBackendWrapper,
+    PLRSealerBackendWrapper,
+    PLRCentrifugeBackendWrapper,
     PLRTransporterBackendWrapper,
 
     # Simulation Drivers
     SimShakerDriver,
+    SimSealerDriver,
+    SimCentrifugeDriver,
     SimTransporterDriver,
+    SimStorageDriver,
+    SimPlateWasherDriver,
+    SimLiquidHandlerDriver,
+    SimDelidderDriver,
+    SimReaderDriver,
 
     # Teachpoints
     Teachpoint,
+    CartesianCoordinates,
+    JointCoordinates,
     TeachpointsRegistry,
+    AccessConfig,
+
+    # Specialized Drivers
+    VenusProtocolDriver,
+    SimulationVenusProtocolDriver,
 )
 ```
 
 ## Components
 
 ### Interfaces
+
 Abstract base classes defining the contract for each device type:
-- `IShakerDriver` - Shaker devices
-- `ISealerDriver` - Plate sealers
-- `ICentrifugeDriver` - Centrifuges
-- `ITransporterDriver` - Robotic arms/transporters
-- And more...
+
+| Interface | Description |
+|-----------|-------------|
+| `BaseDriver` | Base class for all drivers |
+| `IShakerDriver` | Shaker devices |
+| `ISealerDriver` | Plate sealers |
+| `ICentrifugeDriver` | Centrifuges |
+| `ITransporterDriver` | Robotic arms/transporters |
+| `IReaderDriver` | Plate readers |
+| `IDelidderDriver` | Delidding devices |
+| `IStorageDriver` | Storage devices |
+| `IPlateWasherDriver` | Plate washers |
+| `ILiquidHandlerDriver` | Liquid handlers |
 
 ### PLR Wrappers
+
 Adapters that wrap PyLabRobot backends to implement our interfaces:
-- `PLRShakerBackendWrapper`
-- `PLRSealerBackendWrapper`
-- `PLRCentrifugeBackendWrapper`
-- `PLRTransporterBackendWrapper`
+
+| Wrapper | PLR Backend Type |
+|---------|------------------|
+| `PLRShakerBackendWrapper` | `ShakerBackend` |
+| `PLRSealerBackendWrapper` | `SealerBackend` |
+| `PLRCentrifugeBackendWrapper` | `CentrifugeBackend` |
+| `PLRTransporterBackendWrapper` | `ArmBackend` |
 
 ### Simulation Drivers
-Mock implementations for testing:
-- `SimShakerDriver`
-- `SimSealerDriver`
-- `SimCentrifugeDriver`
-- `SimTransporterDriver`
-- And more...
+
+Mock implementations for testing without hardware:
+
+| Driver | Description |
+|--------|-------------|
+| `SimShakerDriver` | Simulated shaker |
+| `SimSealerDriver` | Simulated sealer |
+| `SimCentrifugeDriver` | Simulated centrifuge |
+| `SimTransporterDriver` | Simulated robotic arm |
+| `SimStorageDriver` | Simulated storage |
+| `SimPlateWasherDriver` | Simulated plate washer |
+| `SimLiquidHandlerDriver` | Simulated liquid handler |
+| `SimDelidderDriver` | Simulated delidder |
+| `SimReaderDriver` | Simulated plate reader |
 
 ### Teachpoints
+
 Position management for robotic arms:
-- `Teachpoint` - Named position with coordinates and access parameters
-- `TeachpointsRegistry` - Registry for managing teachpoints
-- `AccessConfig` - Reusable access configuration
+
+| Class | Description |
+|-------|-------------|
+| `Teachpoint` | Named position with coordinates and access parameters |
+| `CartesianCoordinates` | X, Y, Z, yaw, pitch, roll coordinates |
+| `JointCoordinates` | Joint-based coordinates |
+| `TeachpointsRegistry` | Registry for managing teachpoints |
+| `AccessConfig` | Reusable access configuration (vertical/horizontal approach) |
+
+### Specialized Drivers
+
+| Driver | Description |
+|--------|-------------|
+| `VenusProtocolDriver` | Runs Hamilton Venus protocols |
+| `SimulationVenusProtocolDriver` | Simulated Venus driver |
+| `NullPlatePadDriver` | Placeholder for locations without active devices |
 
 ## License
 
@@ -72,11 +130,9 @@ See the [LICENSE](LICENSE) file for the full license text.
 
 ### PyLabRobot
 
-This project wraps and builds upon [PyLabRobot](https://github.com/PyLabRobot/pylabrobot), an open-source, hardware-agnostic interface for liquid-handling robots and accessories. PyLabRobot was developed for the Sculpting Evolution Group at the MIT Media Lab.
+This project wraps and builds upon [PyLabRobot](https://github.com/PyLabRobot/pylabrobot), an open-source, hardware-agnostic interface for liquid-handling robots and accessories.
 
 If you use this software in academic research, please cite PyLabRobot:
-
-> Wierenga, R.P., Golas, S.M., Ho, W., Coley, C.W., & Esvelt, K.M. (2023). PyLabRobot: An open-source, hardware-agnostic interface for liquid-handling robots and accessories. *Device*, 1(4), 100111. https://doi.org/10.1016/j.device.2023.100111
 
 ```bibtex
 @article{wierenga2023pylabrobot,
@@ -94,5 +150,4 @@ If you use this software in academic research, please cite PyLabRobot:
 
 ## Related Projects
 
-- [Swarm Client](https://github.com/Cheshire-Labs/swarm-client) - On-premise WebSocket client using these drivers
-- [Swarm Backend](https://github.com/Cheshire-Labs/swarm) - Cloud gateway for device integration
+- [Orca](https://github.com/Cheshire-Labs/orca) - Lab automation scheduler using these drivers

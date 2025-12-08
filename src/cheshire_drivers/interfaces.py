@@ -1,8 +1,11 @@
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Literal, Union
 
 
 from cheshire_drivers.teachpoints import JointCoordinates, Teachpoint
+
+# Axis names for single-axis movement and free mode control
+AxisName = Literal["rail", "base", "shoulder", "elbow", "wrist", "gripper"]
 
 
 class BaseDriver(ABC):
@@ -201,6 +204,41 @@ class ITransporterDriver(ABC):
 
         Returns:
             JointCoordinates with current j1-j5 values (j6/gripper excluded).
+        """
+        ...
+
+    @abstractmethod
+    async def move_single_axis(self, axis: AxisName, position: float) -> None:
+        """Move a single axis to absolute position.
+
+        Args:
+            axis: Joint name ('rail', 'base', 'shoulder', 'elbow', 'wrist', 'gripper')
+            position: Target position in mm (rail) or degrees (others)
+        """
+        ...
+
+    @abstractmethod
+    async def move_single_axis_relative(self, axis: AxisName, distance: float) -> None:
+        """Move a single axis by relative distance from current position.
+
+        Args:
+            axis: Joint name
+            distance: Distance to move (positive = forward/up, negative = backward/down)
+        """
+        ...
+
+    @abstractmethod
+    async def set_free_mode(self, axes: Union[List[AxisName], Literal["all", "none"]]) -> None:
+        """Enable/disable free mode (freedrive) for specified axes.
+
+        Args:
+            axes: List of axis names to enable, "all" to enable all, "none" to disable all
+
+        Examples:
+            set_free_mode("all")           # Enable free mode on all axes
+            set_free_mode("none")          # Disable free mode on all axes
+            set_free_mode(["rail"])        # Only rail is free
+            set_free_mode(["base", "shoulder"])  # Multiple axes free
         """
         ...
 
