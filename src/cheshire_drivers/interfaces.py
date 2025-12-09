@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Literal, Union
 
 
-from cheshire_drivers.teachpoints import JointCoordinates, Teachpoint
+from cheshire_drivers.teachpoints import CartesianCoordinates, JointCoordinates, Teachpoint
 
 # Axis names for single-axis movement and free mode control
 AxisName = Literal["rail", "base", "shoulder", "elbow", "wrist", "gripper"]
@@ -208,6 +208,15 @@ class ITransporterDriver(ABC):
         ...
 
     @abstractmethod
+    async def get_cartesian_position(self) -> CartesianCoordinates:
+        """Get current position in Cartesian coordinates.
+
+        Returns:
+            CartesianCoordinates with x, y, z, roll, pitch, yaw values.
+        """
+        ...
+
+    @abstractmethod
     async def move_single_axis(self, axis: AxisName, position: float) -> None:
         """Move a single axis to absolute position.
 
@@ -250,6 +259,32 @@ class ITransporterDriver(ABC):
     @abstractmethod
     async def close_gripper(self) -> None:
         """Close gripper to grip a plate."""
+        ...
+
+    @abstractmethod
+    async def set_speed(self, speed: float) -> None:
+        """Set movement speed as percentage of maximum.
+
+        Args:
+            speed: Speed percentage (0.0 = stopped, 1.0 = maximum)
+        """
+        ...
+
+    @abstractmethod
+    async def get_speed(self) -> float:
+        """Get current movement speed setting.
+
+        Returns:
+            Current speed as percentage (0.0 to 1.0)
+        """
+        ...
+
+    @abstractmethod
+    async def halt(self) -> None:
+        """Emergency stop - immediately halt all movement.
+
+        The transporter may need to be re-initialized after a halt.
+        """
         ...
 
 

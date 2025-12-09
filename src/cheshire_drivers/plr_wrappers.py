@@ -507,6 +507,35 @@ class PLRTransporterBackendWrapper(ITransporterDriver):
             # PLR only supports one axis at a time, enable all for multiple
             await self._backend.set_free_mode(True, 0)  # type: ignore[attr-defined]
 
+    async def get_cartesian_position(self) -> CartesianCoordinates:
+        """Get current position in Cartesian coordinates from the robot."""
+        plr_coords = await self._backend.get_cartesian_position()  # type: ignore[attr-defined]
+        # PLR returns PreciseFlexCartesianCoords with location (Coordinate) and rotation (Rotation)
+        return CartesianCoordinates(
+            x=plr_coords.location.x,
+            y=plr_coords.location.y,
+            z=plr_coords.location.z,
+            roll=plr_coords.rotation.x,
+            pitch=plr_coords.rotation.y,
+            yaw=plr_coords.rotation.z,
+        )
+
+    async def set_speed(self, speed: float) -> None:
+        """Set movement speed as percentage of maximum (0.0 to 1.0)."""
+        # PLR expects 0-100, our interface uses 0.0-1.0
+        speed_percent = speed * 100.0
+        await self._backend.set_speed(speed_percent)  # type: ignore[attr-defined]
+
+    async def get_speed(self) -> float:
+        """Get current movement speed setting as percentage (0.0 to 1.0)."""
+        # PLR returns 0-100, convert to 0.0-1.0
+        speed_percent = await self._backend.get_speed()  # type: ignore[attr-defined]
+        return speed_percent / 100.0
+
+    async def halt(self) -> None:
+        """Emergency stop - immediately halt all movement."""
+        await self._backend.halt()  # type: ignore[attr-defined]
+
 
 class PLRSealerBackendWrapper(ISealerDriver):
     def __init__(self, backend: PLRSealerBackend):
