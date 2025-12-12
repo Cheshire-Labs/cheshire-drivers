@@ -1,51 +1,110 @@
 import asyncio
-from typing import List
+from typing import List, Literal, Union
 
-from cheshire_drivers.interfaces import ICentrifugeDriver, ISealerDriver, IShakerDriver, ITransporterDriver
+from cheshire_drivers.interfaces import ICentrifugeDriver, ISealerDriver, IShakerDriver, ITransporterDriver, AxisName
 from pylabrobot.sealing.backend import SealerBackend as PLRSealerBackend
 from pylabrobot.shaking.backend import ShakerBackend as PLRShakerBackend
 from pylabrobot.centrifuge.backend import CentrifugeBackend as PLRCentrifugeBackend
 
-from pylabrobot.arms.backend import ArmBackend as PLRArmBackend, VerticalAccess, HorizontalAccess
-from pylabrobot.arms.coords import CartesianCoords as PLRCartesianCoords, ElbowOrientation
+from pylabrobot.arms.backend import SCARABackend as PLRArmBackend, VerticalAccess, HorizontalAccess
+
+# Re-export PLR backends for use by orca-core
+__all__ = [
+    "PLRArmBackend",
+    "PLRSealerBackend",
+    "PLRShakerBackend",
+    "PLRCentrifugeBackend",
+    "PLRTransporterBackendWrapper",
+    "PLRSealerBackendWrapper",
+    "PLRShakerBackendWrapper",
+    "PLRCentrifugeBackendWrapper",
+    "convert_cartesian_to_plr_coord",
+    "convert_joint_to_plr_list",
+]
+from pylabrobot.arms.backend import PreciseFlexCartesianCoords as PLRCartesianCoords
+from pylabrobot.arms.precise_flex.coords import ElbowOrientation
 
 from pylabrobot.resources import Coordinate, Rotation
 
-from cheshire_drivers.teachpoints import Teachpoint, TeachpointsRegistry
+from cheshire_drivers.teachpoints import Teachpoint, TeachpointsRegistry, JointCoordinates, CartesianCoordinates
 
 
-def convert_teachpoint_to_plr_coord(teachpoint: Teachpoint):
-    """Convert Orca Teachpoint to PyLabRobot CartesianCoords.
+def convert_cartesian_to_plr_coord(
+    coords: CartesianCoordinates,
+    orientation: str | None = None
+) -> PLRCartesianCoords:
+    """Convert CartesianCoordinates to PyLabRobot CartesianCoords.
 
     Args:
-        teachpoint: Orca teachpoint with coordinates and orientation
+        coords: Cartesian coordinates (x, y, z, roll, pitch, yaw)
+        orientation: Optional elbow orientation ('left' or 'right', case-insensitive)
 
     Returns:
         PLRCartesianCoords with proper Coordinate, Rotation, and ElbowOrientation
 
     Raises:
-        ValueError: If orientation is provided but is not 'left' or 'right' (case-insensitive)
+        ValueError: If orientation is provided but is not 'left' or 'right'
     """
-    c = teachpoint.coordinates
-
     # Handle orientation (case-insensitive, optional)
     elbow = None
-    if teachpoint.orientation is not None:
-        orientation_lower = teachpoint.orientation.lower()
+    if orientation is not None:
+        orientation_lower = orientation.lower()
         if orientation_lower == "left":
             elbow = ElbowOrientation.LEFT
         elif orientation_lower == "right":
             elbow = ElbowOrientation.RIGHT
         else:
-            raise ValueError(f"Invalid orientation '{teachpoint.orientation}'. Must be 'left' or 'right' (case-insensitive).")
+            raise ValueError(f"Invalid orientation '{orientation}'. Must be 'left' or 'right' (case-insensitive).")
 
     return PLRCartesianCoords(
-        Coordinate(c.x, c.y, c.z),
-        Rotation(c.roll, c.pitch, c.yaw),
+        Coordinate(coords.x, coords.y, coords.z),
+        Rotation(coords.roll, coords.pitch, coords.yaw),
         elbow
     )
 
+
+def convert_joint_to_plr_list(coords: JointCoordinates) -> list[float]:
+    """Convert JointCoordinates to PLR joint list format.
+
+    Args:
+        coords: Joint coordinates with all 6 joints
+
+    Returns:
+        List of 6 floats: [rail, base, shoulder, elbow, wrist, gripper]
+    """
+    return [
+        coords.rail,
+        coords.base,
+        coords.shoulder,
+        coords.elbow,
+        coords.wrist,
+        coords.gripper
+    ]
+
+
 class PLRTransporterBackendWrapper(ITransporterDriver):
+    """Wrapper adapting PyLabRobot arm backends to ITransporterDriver interface.
+
+    Handles teachpoint management, access pattern conversion, gateway traversal,
+    and automatic crossover maneuvers when changing elbow orientation.
+    """
+
+    # Default plate width for SBS microplates (85.48mm nominal)
+    DEFAULT_PLATE_WIDTH = 75.0
+
+    # Crossover joint positions [rail, base, shoulder, elbow, wrist, gripper]
+    SAFE_LOC = (0.0, 170.0, 0.0, 180.0, -180.0, 0.0)
+    RIGHTY_J = (0.0, 170.0, 10.0, 120.0, -130.0, 0.0)
+    LEFTY_J = (0.0, 170.0, -20.0, 240.0, -225.0, 0.0)
+
+    # Legacy 6-step crossover constants (for _perform_crossover_6step)
+    SAFE_SHOULDER = 0.0
+    ELBOW_EXTEND_RIGHT = 90.0
+    ELBOW_EXTEND_LEFT = 270.0
+    SAFE_ELBOW_RIGHT = 135.0
+    SAFE_ELBOW_LEFT = 225.0
+    ELBOW_CROSSOVER = 180.0
+
     def __init__(self, backend: PLRArmBackend) -> None:
         self._backend = backend
         self._teachpoints = TeachpointsRegistry()
@@ -74,6 +133,12 @@ class PLRTransporterBackendWrapper(ITransporterDriver):
         """Moves the transporter to a safe position."""
         await self._backend.move_to_safe()
 
+    async def open_gripper(self) -> None:
+        return await self._backend.open_gripper(83.0)
+    
+    async def close_gripper(self) -> None:
+        return await self._backend.close_gripper(83.0)
+
     def _resolve_gateway_path(self, teachpoint: Teachpoint) -> List[Teachpoint]:
         """Resolve gateway chain, returning ordered list of waypoints to traverse.
 
@@ -99,13 +164,199 @@ class PLRTransporterBackendWrapper(ITransporterDriver):
         # Reverse so we traverse from outermost gateway inward
         return list(reversed(path))
 
+    async def _move_to_joint_coords(self, tp: Teachpoint) -> None:
+        """Move using joint-space coordinates, preserving current gripper state."""
+        coords = tp.coordinates
+        assert isinstance(coords, JointCoordinates)
+
+        # Get current gripper position to preserve it (teachpoints don't store gripper)
+        current_joints = await self._backend.get_joint_position()
+        current_gripper = list(current_joints)[5]  # gripper is 6th element (index 5)
+
+        # Create JointCoordinates with current gripper state
+        coords_with_gripper = JointCoordinates(
+            rail=coords.rail,
+            base=coords.base,
+            shoulder=coords.shoulder,
+            elbow=coords.elbow,
+            wrist=coords.wrist,
+            gripper=current_gripper
+        )
+
+        joint_list = convert_joint_to_plr_list(coords_with_gripper)
+        await self._backend.move_to(joint_list)
+
+    async def get_joint_position(self) -> JointCoordinates:
+        """Get current joint positions from the robot."""
+        plr_joints = await self._backend.get_joint_position()
+        # PLR returns joint values as iterable: [rail, base, shoulder, elbow, wrist, gripper]
+        joints_list = list(plr_joints)
+        return JointCoordinates(
+            rail=joints_list[0],
+            base=joints_list[1],
+            shoulder=joints_list[2],
+            elbow=joints_list[3],
+            wrist=joints_list[4],
+            gripper=joints_list[5]
+        )
+
+    def _get_axis_index(self, joint_name: str) -> int:
+        """Get the axis index for a joint, accounting for has_rail configuration.
+
+        Args:
+            joint_name: One of 'rail', 'base', 'shoulder', 'elbow', 'wrist', 'gripper'
+
+        Returns:
+            The axis number to use with move_one_axis command (1-based per Brooks TCS API).
+        """
+        has_rail = getattr(self._backend, '_has_rail', True)
+
+        if has_rail:
+            # With rail: 1=rail, 2=base, 3=shoulder, 4=elbow, 5=wrist, 6=gripper
+            axis_map = {
+                'rail': 1, 'base': 2, 'shoulder': 3,
+                'elbow': 4, 'wrist': 5, 'gripper': 6
+            }
+        else:
+            # Without rail: 1=base, 2=shoulder, 3=elbow, 4=wrist, 5=gripper
+            axis_map = {
+                'base': 1, 'shoulder': 2, 'elbow': 3,
+                'wrist': 4, 'gripper': 5
+            }
+
+        if joint_name not in axis_map:
+            raise ValueError(f"Unknown joint name: {joint_name}")
+        return axis_map[joint_name]
+
+    async def _move_one_axis(self, joint_name: str, position: float) -> None:
+        """Move a single joint to the specified position.
+
+        Args:
+            joint_name: One of 'shoulder', 'elbow', 'wrist'
+            position: Target position in degrees
+
+        Note:
+            This method requires a backend that supports move_one_axis
+            (e.g., PreciseFlexBackend). Will raise AttributeError if not supported.
+        """
+        axis = self._get_axis_index(joint_name)
+        # Use profile_index 1 (standard motion profile)
+        # Type ignore: move_one_axis is defined on PreciseFlexBackend but not SCARABackend base
+        await self._backend.move_one_axis(axis, position, 1)  # type: ignore[attr-defined]
+
+    async def _needs_crossover(self, teachpoint: Teachpoint) -> bool:
+        """Check if crossover maneuver is needed to reach teachpoint.
+
+        Crossover is needed when the robot must change elbow orientation
+        (left <-> right) to reach the target position.
+        """
+        current_joints = await self.get_joint_position()
+        current_elbow = current_joints.elbow
+        current_is_left = current_elbow > 180
+
+        if teachpoint.is_joint_space():
+            assert isinstance(teachpoint.coordinates, JointCoordinates)
+            target_is_left = teachpoint.coordinates.elbow > 180
+        else:
+            # Cartesian - orientation is required
+            if teachpoint.orientation is None:
+                raise ValueError(
+                    f"Cartesian teachpoint '{teachpoint.name}' must specify orientation "
+                    "(left/right) for crossover detection"
+                )
+            target_is_left = teachpoint.orientation.lower() == "left"
+
+        return current_is_left != target_is_left
+
+    async def _perform_crossover_maneuver(
+        self,
+        strategy: Literal["2step", "6step"] = "2step"
+    ) -> None:
+        """Perform the crossover maneuver to change elbow orientation.
+
+        Args:
+            strategy: Which crossover algorithm to use:
+                - "2step": Move to SafeLoc then target config (default)
+                - "6step": Single-axis moves with plate clearance extension
+        """
+        if strategy == "2step":
+            await self._crossover_2step()
+        elif strategy == "6step":
+            await self._crossover_6step()
+
+    async def _crossover_2step(self) -> None:
+        """Crossover using 2 full joint moves to predefined positions.
+
+        Sequence:
+        1. Move to SafeLoc (elbow at 180, wrist at -180)
+        2. Move to target config (Righty_j or Lefty_j)
+        """
+        current_joints = await self.get_joint_position()
+        currently_right = current_joints.elbow < 180
+        current_gripper = current_joints.gripper
+
+        # Step 1: Move to SafeLoc
+        safe = list(self.SAFE_LOC)
+        safe[5] = current_gripper
+        await self._backend.move_to(safe)
+
+        # Step 2: Move to target config
+        target = list(self.LEFTY_J if currently_right else self.RIGHTY_J)
+        target[5] = current_gripper
+        await self._backend.move_to(target)
+
+    async def _crossover_6step(self) -> None:
+        """6-step crossover using single-axis moves with plate clearance.
+
+        Extends elbow outward first to give plate clearance before rotating wrist.
+        Works mechanically but may cause wrist spin issues with TCS due to
+        joint-space vs tool-space mismatch.
+
+        Sequence:
+        1. Shoulder → 0°
+        2. Elbow → 90° or 270° (extend outward)
+        3. Wrist → ±180° (shortest path)
+        4. Elbow → 135° or 225° (tuck)
+        5. Elbow → 180° (cross under bar)
+        6. Elbow → exit to opposite side
+        """
+        current_joints = await self.get_joint_position()
+        current_elbow = current_joints.elbow
+        current_wrist = current_joints.wrist
+        currently_right = current_elbow < 180
+
+        await self._move_one_axis('shoulder', self.SAFE_SHOULDER)
+
+        extend_angle = self.ELBOW_EXTEND_RIGHT if currently_right else self.ELBOW_EXTEND_LEFT
+        await self._move_one_axis('elbow', extend_angle)
+
+        wrist_target = 180.0 if current_wrist >= 0 else -180.0
+        await self._move_one_axis('wrist', wrist_target)
+
+        tuck_angle = self.SAFE_ELBOW_RIGHT if currently_right else self.SAFE_ELBOW_LEFT
+        await self._move_one_axis('elbow', tuck_angle)
+
+        await self._move_one_axis('elbow', self.ELBOW_CROSSOVER)
+
+        exit_angle = self.SAFE_ELBOW_LEFT if currently_right else self.SAFE_ELBOW_RIGHT
+        await self._move_one_axis('elbow', exit_angle)
+
     async def move_to_position(self, position_name: str) -> None:
         """Move robot to a position without picking/placing (for waypoints)."""
         tp = self._teachpoints.get(position_name)
         if tp is None:
             raise ValueError(f"The position '{position_name}' is not taught for {self.name}")
-        coords = convert_teachpoint_to_plr_coord(tp)
-        await self._backend.move_to(coords)
+
+        # Check if crossover maneuver is needed before moving
+        if await self._needs_crossover(tp):
+            await self._perform_crossover_maneuver()
+
+        if tp.is_joint_space():
+            await self._move_to_joint_coords(tp)
+        else:
+            assert isinstance(tp.coordinates, CartesianCoordinates)
+            plr_coords = convert_cartesian_to_plr_coord(tp.coordinates, tp.orientation)
+            await self._backend.move_to(plr_coords)
 
     def _teachpoint_to_plr_access(self, tp: Teachpoint):
         """Convert teachpoint access parameters to PLR AccessPattern.
@@ -119,37 +370,25 @@ class PLRTransporterBackendWrapper(ITransporterDriver):
         Raises:
             ValueError: If access_type is invalid or required parameters are None
         """
-        # Validate access_type
         if tp.access_type is None:
             raise ValueError(f"Teachpoint '{tp.name}' has no access_type specified. Must be 'vertical' or 'horizontal'.")
 
         access_type_lower = tp.access_type.lower()
 
-        # Validate common parameter
-        if tp.gripper_offset is None:
-            raise ValueError(f"Teachpoint '{tp.name}' has no gripper_offset specified.")
-
         if access_type_lower == "vertical":
-            # Validate vertical-specific parameters
-            if tp.retract_distance is None:
-                raise ValueError(f"Teachpoint '{tp.name}' (vertical access) has no retract_distance specified.")
-
+            # vertical_clearance = distance above teachpoint for approach/depart
             return VerticalAccess(
-                approach_height_mm=tp.retract_distance,
-                clearance_mm=tp.retract_distance,
+                approach_height_mm=tp.vertical_clearance,
+                clearance_mm=tp.vertical_clearance,
                 gripper_offset_mm=tp.gripper_offset
             )
         elif access_type_lower == "horizontal":
-            # Validate horizontal-specific parameters
-            if tp.vertical_clearance is None:
-                raise ValueError(f"Teachpoint '{tp.name}' (horizontal access) has no vertical_clearance specified.")
-            if tp.z_above is None:
-                raise ValueError(f"Teachpoint '{tp.name}' (horizontal access) has no z_above specified.")
-
+            # horizontal_clearance = distance outside slot for approach/depart
+            # vertical_clearance = lift height after horizontal retract
             return HorizontalAccess(
-                approach_distance_mm=tp.vertical_clearance,
-                clearance_mm=tp.vertical_clearance,
-                lift_height_mm=tp.z_above,
+                approach_distance_mm=tp.horizontal_clearance,
+                clearance_mm=tp.horizontal_clearance,
+                lift_height_mm=tp.vertical_clearance,
                 gripper_offset_mm=tp.gripper_offset
             )
         else:
@@ -165,10 +404,15 @@ class PLRTransporterBackendWrapper(ITransporterDriver):
         for waypoint in gateway_path:
             await self.move_to_position(waypoint.name)
 
+        # Check if crossover is needed before final approach to pick location
+        if await self._needs_crossover(tp):
+            await self._perform_crossover_maneuver()
+
         # Execute actual pick
-        coords = convert_teachpoint_to_plr_coord(tp)
+        assert isinstance(tp.coordinates, CartesianCoordinates)
+        plr_coords = convert_cartesian_to_plr_coord(tp.coordinates, tp.orientation)
         access = self._teachpoint_to_plr_access(tp)
-        await self._backend.pick_plate(coords, access)
+        await self._backend.pick_up_resource(plr_coords, self.DEFAULT_PLATE_WIDTH, access)
 
         # Traverse gateway path in reverse (exit)
         for waypoint in reversed(gateway_path):
@@ -184,10 +428,15 @@ class PLRTransporterBackendWrapper(ITransporterDriver):
         for waypoint in gateway_path:
             await self.move_to_position(waypoint.name)
 
+        # Check if crossover is needed before final approach to place location
+        if await self._needs_crossover(tp):
+            await self._perform_crossover_maneuver()
+
         # Execute actual place
-        coords = convert_teachpoint_to_plr_coord(tp)
+        assert isinstance(tp.coordinates, CartesianCoordinates)
+        plr_coords = convert_cartesian_to_plr_coord(tp.coordinates, tp.orientation)
         access = self._teachpoint_to_plr_access(tp)
-        await self._backend.place_plate(coords, access)
+        await self._backend.drop_resource(plr_coords, access)
 
         # Traverse gateway path in reverse (exit)
         for waypoint in reversed(gateway_path):
@@ -200,6 +449,96 @@ class PLRTransporterBackendWrapper(ITransporterDriver):
         """Load taught positions from a list of Teachpoint objects."""
         self._teachpoints.clear()
         [self._teachpoints.add(t) for t in teachpoints]
+
+    async def pick_at_coords(self, teachpoint: Teachpoint) -> None:
+        """Pick plate at coordinates specified by teachpoint."""
+        # Check if crossover is needed before moving
+        if await self._needs_crossover(teachpoint):
+            await self._perform_crossover_maneuver()
+
+        assert isinstance(teachpoint.coordinates, CartesianCoordinates)
+        plr_coords = convert_cartesian_to_plr_coord(teachpoint.coordinates, teachpoint.orientation)
+        access = self._teachpoint_to_plr_access(teachpoint)
+        await self._backend.pick_up_resource(plr_coords, self.DEFAULT_PLATE_WIDTH, access)
+
+    async def place_at_coords(self, teachpoint: Teachpoint) -> None:
+        """Place plate at coordinates specified by teachpoint."""
+        # Check if crossover is needed before moving
+        if await self._needs_crossover(teachpoint):
+            await self._perform_crossover_maneuver()
+
+        assert isinstance(teachpoint.coordinates, CartesianCoordinates)
+        plr_coords = convert_cartesian_to_plr_coord(teachpoint.coordinates, teachpoint.orientation)
+        access = self._teachpoint_to_plr_access(teachpoint)
+        await self._backend.drop_resource(plr_coords, access)
+
+    async def move_to_coords(self, teachpoint: Teachpoint) -> None:
+        """Move to coordinates specified by teachpoint."""
+        # Check if crossover is needed before moving
+        if await self._needs_crossover(teachpoint):
+            await self._perform_crossover_maneuver()
+
+        if teachpoint.is_joint_space():
+            await self._move_to_joint_coords(teachpoint)
+        else:
+            assert isinstance(teachpoint.coordinates, CartesianCoordinates)
+            plr_coords = convert_cartesian_to_plr_coord(teachpoint.coordinates, teachpoint.orientation)
+            await self._backend.move_to(plr_coords)
+
+    async def move_single_axis(self, axis: AxisName, position: float) -> None:
+        """Move a single axis to absolute position."""
+        axis_num = self._get_axis_index(axis)
+        # Use profile_index 1 (standard motion profile)
+        await self._backend.move_one_axis(axis_num, position, 1)  # type: ignore[attr-defined]
+
+    async def move_single_axis_relative(self, axis: AxisName, distance: float) -> None:
+        """Move a single axis by relative distance from current position."""
+        current = await self.get_joint_position()
+        current_pos = getattr(current, axis)
+        await self.move_single_axis(axis, current_pos + distance)
+
+    async def set_free_mode(self, axes: Union[List[AxisName], Literal["all", "none"]]) -> None:
+        """Enable/disable free mode (freedrive) for specified axes."""
+        if axes == "none":
+            await self._backend.set_free_mode(False)  # type: ignore[attr-defined]
+        elif axes == "all":
+            await self._backend.set_free_mode(True, 0)  # type: ignore[attr-defined]
+        elif isinstance(axes, list) and len(axes) == 1:
+            axis_num = self._get_axis_index(axes[0])
+            await self._backend.set_free_mode(True, axis_num)  # type: ignore[attr-defined]
+        else:
+            # PLR only supports one axis at a time, enable all for multiple
+            await self._backend.set_free_mode(True, 0)  # type: ignore[attr-defined]
+
+    async def get_cartesian_position(self) -> CartesianCoordinates:
+        """Get current position in Cartesian coordinates from the robot."""
+        plr_coords = await self._backend.get_cartesian_position()  # type: ignore[attr-defined]
+        # PLR returns PreciseFlexCartesianCoords with location (Coordinate) and rotation (Rotation)
+        return CartesianCoordinates(
+            x=plr_coords.location.x,
+            y=plr_coords.location.y,
+            z=plr_coords.location.z,
+            roll=plr_coords.rotation.x,
+            pitch=plr_coords.rotation.y,
+            yaw=plr_coords.rotation.z,
+        )
+
+    async def set_speed(self, speed: float) -> None:
+        """Set movement speed as percentage of maximum (0.0 to 1.0)."""
+        # PLR expects 0-100, our interface uses 0.0-1.0
+        speed_percent = speed * 100.0
+        await self._backend.set_speed(speed_percent)  # type: ignore[attr-defined]
+
+    async def get_speed(self) -> float:
+        """Get current movement speed setting as percentage (0.0 to 1.0)."""
+        # PLR returns 0-100, convert to 0.0-1.0
+        speed_percent = await self._backend.get_speed()  # type: ignore[attr-defined]
+        return speed_percent / 100.0
+
+    async def halt(self) -> None:
+        """Emergency stop - immediately halt all movement."""
+        await self._backend.halt()  # type: ignore[attr-defined]
+
 
 class PLRSealerBackendWrapper(ISealerDriver):
     def __init__(self, backend: PLRSealerBackend):
@@ -278,7 +617,7 @@ class PLRCentrifugeBackendWrapper(ICentrifugeDriver):
     def __init__(self, backend: PLRCentrifugeBackend):
         self._backend = backend
         self._is_initialized = False
-        self._acceleration = 7
+        self._acceleration: float = 7.0
 
     @property
     def is_initialized(self) -> bool:

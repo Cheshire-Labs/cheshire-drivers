@@ -1,10 +1,10 @@
 import asyncio
 import logging
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional, Union
 
-from cheshire_drivers.interfaces import ICentrifugeDriver, IDelidderDriver, ILiquidHandlerDriver, IPlateWasherDriver, IProtocolRunnerDriver, IReaderDriver, ISealerDriver, IShakerDriver, IStorageDriver, ITempGettableDriver, ITempSettableDriver, ITransporterDriver, IWasteDriver
-from cheshire_drivers.teachpoints import Teachpoint
+from cheshire_drivers.interfaces import AxisName, ICentrifugeDriver, IDelidderDriver, ILiquidHandlerDriver, IPlateWasherDriver, IProtocolRunnerDriver, IReaderDriver, ISealerDriver, IShakerDriver, IStorageDriver, ITempGettableDriver, ITempSettableDriver, ITransporterDriver, IWasteDriver
+from cheshire_drivers.teachpoints import CartesianCoordinates, JointCoordinates, Teachpoint
 
 logger = logging.getLogger("cheshire_drivers")
 
@@ -265,6 +265,87 @@ class SimTransporterDriver(ITransporterDriver):
     def load_teachpoints(self, teachpoints: List[Teachpoint]) -> None:
         """Load taught positions."""
         self._teachpoints = {t.name: t for t in teachpoints}
+
+    async def pick_at_coords(self, teachpoint: Teachpoint) -> None:
+        """Pick plate at coordinates specified by teachpoint."""
+        coords = teachpoint.coordinates
+        if isinstance(coords, CartesianCoordinates):
+            await self._sim(f"Driver: {self.name} picking at coords ({coords.x}, {coords.y}, {coords.z})...")
+            logger.info(f"Driver: {self.name} picked at coords ({coords.x}, {coords.y}, {coords.z})")
+        else:
+            assert isinstance(coords, JointCoordinates)
+            await self._sim(f"Driver: {self.name} picking at joint coords (elbow={coords.elbow})...")
+            logger.info(f"Driver: {self.name} picked at joint coords (elbow={coords.elbow})")
+
+    async def place_at_coords(self, teachpoint: Teachpoint) -> None:
+        """Place plate at coordinates specified by teachpoint."""
+        coords = teachpoint.coordinates
+        if isinstance(coords, CartesianCoordinates):
+            await self._sim(f"Driver: {self.name} placing at coords ({coords.x}, {coords.y}, {coords.z})...")
+            logger.info(f"Driver: {self.name} placed at coords ({coords.x}, {coords.y}, {coords.z})")
+        else:
+            assert isinstance(coords, JointCoordinates)
+            await self._sim(f"Driver: {self.name} placing at joint coords (elbow={coords.elbow})...")
+            logger.info(f"Driver: {self.name} placed at joint coords (elbow={coords.elbow})")
+
+    async def move_to_coords(self, teachpoint: Teachpoint) -> None:
+        """Move to coordinates specified by teachpoint."""
+        coords = teachpoint.coordinates
+        if isinstance(coords, CartesianCoordinates):
+            await self._sim(f"Driver: {self.name} moving to coords ({coords.x}, {coords.y}, {coords.z})...")
+            logger.info(f"Driver: {self.name} moved to coords ({coords.x}, {coords.y}, {coords.z})")
+        else:
+            assert isinstance(coords, JointCoordinates)
+            await self._sim(f"Driver: {self.name} moving to joint coords (elbow={coords.elbow})...")
+            logger.info(f"Driver: {self.name} moved to joint coords (elbow={coords.elbow})")
+
+    async def get_joint_position(self) -> JointCoordinates:
+        """Return simulated joint position (default safe position)."""
+        return JointCoordinates(rail=0.0, base=170.0, shoulder=0.0, elbow=180.0, wrist=0.0, gripper=0.0)
+
+    async def move_single_axis(self, axis: AxisName, position: float) -> None:
+        """Move a single axis to absolute position."""
+        await self._sim(f"Driver: {self.name} moving {axis} to {position}...")
+        logger.info(f"Driver: {self.name} moved {axis} to {position}")
+
+    async def move_single_axis_relative(self, axis: AxisName, distance: float) -> None:
+        """Move a single axis by relative distance from current position."""
+        await self._sim(f"Driver: {self.name} moving {axis} by {distance}...")
+        logger.info(f"Driver: {self.name} moved {axis} by {distance}")
+
+    async def set_free_mode(self, axes: Union[List[AxisName], Literal["all", "none"]]) -> None:
+        """Enable/disable free mode (freedrive) for specified axes."""
+        await self._sim(f"Driver: {self.name} setting free mode: {axes}...")
+        logger.info(f"Driver: {self.name} free mode set to {axes}")
+
+    async def open_gripper(self) -> None:
+        """Open gripper to default width for standard plates."""
+        plate_width = 75.0  # Internal default for standard plates
+        await self._sim(f"Driver: {self.name} opening gripper to {plate_width}mm...")
+        logger.info(f"Driver: {self.name} gripper opened to {plate_width}mm")
+
+    async def close_gripper(self) -> None:
+        """Close gripper."""
+        await self._sim(f"Driver: {self.name} closing gripper...")
+        logger.info(f"Driver: {self.name} gripper closed")
+
+    async def get_cartesian_position(self) -> CartesianCoordinates:
+        """Return simulated Cartesian position."""
+        return CartesianCoordinates(x=0.0, y=0.0, z=0.0, roll=0.0, pitch=0.0, yaw=0.0)
+
+    async def set_speed(self, speed: float) -> None:
+        """Set movement speed as percentage of maximum (0.0 to 1.0)."""
+        await self._sim(f"Driver: {self.name} setting speed to {speed * 100}%...")
+        logger.info(f"Driver: {self.name} speed set to {speed * 100}%")
+
+    async def get_speed(self) -> float:
+        """Get current movement speed setting as percentage (0.0 to 1.0)."""
+        return 0.5  # Default 50% speed
+
+    async def halt(self) -> None:
+        """Emergency stop - immediately halt all movement."""
+        await self._sim(f"Driver: {self.name} HALT!")
+        logger.warning(f"Driver: {self.name} emergency halt executed")
 
 
 class StorageSimMixin(Sim, IStorageDriver):

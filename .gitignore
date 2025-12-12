@@ -34,4 +34,8 @@ htmlcov/
 .coverage.*
 coverage.xml
 
+# Serena
 .serena/
+
+# Claude
+claude.md

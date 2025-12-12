@@ -28,7 +28,12 @@ from cheshire_drivers.plr_wrappers import (
     PLRSealerBackendWrapper,
     PLRShakerBackendWrapper,
     PLRCentrifugeBackendWrapper,
-    convert_teachpoint_to_plr_coord,
+    convert_cartesian_to_plr_coord,
+    convert_joint_to_plr_list,
+    PLRArmBackend,
+    PLRSealerBackend,
+    PLRShakerBackend,
+    PLRCentrifugeBackend,
 )
 
 # Simulation Drivers
@@ -60,6 +65,7 @@ from cheshire_drivers.sims import (
 from cheshire_drivers.teachpoints import (
     Teachpoint,
     CartesianCoordinates,
+    JointCoordinates,
     TeachpointsRegistry,
     AccessConfig,
 )
@@ -92,7 +98,12 @@ __all__ = [
     "PLRSealerBackendWrapper",
     "PLRShakerBackendWrapper",
     "PLRCentrifugeBackendWrapper",
-    "convert_teachpoint_to_plr_coord",
+    "convert_cartesian_to_plr_coord",
+    "convert_joint_to_plr_list",
+    "PLRArmBackend",
+    "PLRSealerBackend",
+    "PLRShakerBackend",
+    "PLRCentrifugeBackend",
     # Simulation Drivers
     "SimStrategy",
     "SleepSim",
@@ -118,6 +129,7 @@ __all__ = [
     # Teachpoints
     "Teachpoint",
     "CartesianCoordinates",
+    "JointCoordinates",
     "TeachpointsRegistry",
     "AccessConfig",
     # Specialized Drivers

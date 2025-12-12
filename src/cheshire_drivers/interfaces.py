@@ -1,8 +1,11 @@
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Literal, Union
 
 
-from cheshire_drivers.teachpoints import Teachpoint
+from cheshire_drivers.teachpoints import CartesianCoordinates, JointCoordinates, Teachpoint
+
+# Axis names for single-axis movement and free mode control
+AxisName = Literal["rail", "base", "shoulder", "elbow", "wrist", "gripper"]
 
 
 class BaseDriver(ABC):
@@ -178,6 +181,110 @@ class ITransporterDriver(ABC):
     @abstractmethod
     async def move_to_position(self, position_name: str) -> None:
         """Move to a position without picking/placing (for waypoint traversal)."""
+        ...
+
+    @abstractmethod
+    async def pick_at_coords(self, teachpoint: Teachpoint) -> None:
+        """Pick plate at coordinates specified by teachpoint."""
+        ...
+
+    @abstractmethod
+    async def place_at_coords(self, teachpoint: Teachpoint) -> None:
+        """Place plate at coordinates specified by teachpoint."""
+        ...
+
+    @abstractmethod
+    async def move_to_coords(self, teachpoint: Teachpoint) -> None:
+        """Move to coordinates specified by teachpoint."""
+        ...
+
+    @abstractmethod
+    async def get_joint_position(self) -> JointCoordinates:
+        """Get current joint positions.
+
+        Returns:
+            JointCoordinates with current joint values (rail, base, shoulder, elbow, wrist).
+        """
+        ...
+
+    @abstractmethod
+    async def get_cartesian_position(self) -> CartesianCoordinates:
+        """Get current position in Cartesian coordinates.
+
+        Returns:
+            CartesianCoordinates with x, y, z, roll, pitch, yaw values.
+        """
+        ...
+
+    @abstractmethod
+    async def move_single_axis(self, axis: AxisName, position: float) -> None:
+        """Move a single axis to absolute position.
+
+        Args:
+            axis: Joint name ('rail', 'base', 'shoulder', 'elbow', 'wrist', 'gripper')
+            position: Target position in mm (rail) or degrees (others)
+        """
+        ...
+
+    @abstractmethod
+    async def move_single_axis_relative(self, axis: AxisName, distance: float) -> None:
+        """Move a single axis by relative distance from current position.
+
+        Args:
+            axis: Joint name
+            distance: Distance to move (positive = forward/up, negative = backward/down)
+        """
+        ...
+
+    @abstractmethod
+    async def set_free_mode(self, axes: Union[List[AxisName], Literal["all", "none"]]) -> None:
+        """Enable/disable free mode (freedrive) for specified axes.
+
+        Args:
+            axes: List of axis names to enable, "all" to enable all, "none" to disable all
+
+        Examples:
+            set_free_mode("all")           # Enable free mode on all axes
+            set_free_mode("none")          # Disable free mode on all axes
+            set_free_mode(["rail"])        # Only rail is free
+            set_free_mode(["base", "shoulder"])  # Multiple axes free
+        """
+        ...
+
+    @abstractmethod
+    async def open_gripper(self) -> None:
+        """Open gripper to default width for standard plates."""
+        ...
+
+    @abstractmethod
+    async def close_gripper(self) -> None:
+        """Close gripper to grip a plate."""
+        ...
+
+    @abstractmethod
+    async def set_speed(self, speed: float) -> None:
+        """Set movement speed as percentage of maximum.
+
+        Args:
+            speed: Speed percentage (0.0 = stopped, 1.0 = maximum)
+        """
+        ...
+
+    @abstractmethod
+    async def get_speed(self) -> float:
+        """Get current movement speed setting.
+
+        Returns:
+            Current speed as percentage (0.0 to 1.0)
+        """
+        ...
+
+    @abstractmethod
+    async def halt(self) -> None:
+        """Emergency stop - immediately halt all movement.
+
+        The transporter may need to be re-initialized after a halt.
+        """
         ...
 
 
