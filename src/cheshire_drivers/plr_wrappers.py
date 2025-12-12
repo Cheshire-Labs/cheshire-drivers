@@ -412,7 +412,7 @@ class PLRTransporterBackendWrapper(ITransporterDriver):
         assert isinstance(tp.coordinates, CartesianCoordinates)
         plr_coords = convert_cartesian_to_plr_coord(tp.coordinates, tp.orientation)
         access = self._teachpoint_to_plr_access(tp)
-        await self._backend.pick_plate(plr_coords, self.DEFAULT_PLATE_WIDTH, access)
+        await self._backend.pick_up_resource(plr_coords, self.DEFAULT_PLATE_WIDTH, access)
 
         # Traverse gateway path in reverse (exit)
         for waypoint in reversed(gateway_path):
@@ -436,7 +436,7 @@ class PLRTransporterBackendWrapper(ITransporterDriver):
         assert isinstance(tp.coordinates, CartesianCoordinates)
         plr_coords = convert_cartesian_to_plr_coord(tp.coordinates, tp.orientation)
         access = self._teachpoint_to_plr_access(tp)
-        await self._backend.place_plate(plr_coords, access)
+        await self._backend.drop_resource(plr_coords, access)
 
         # Traverse gateway path in reverse (exit)
         for waypoint in reversed(gateway_path):
@@ -459,7 +459,7 @@ class PLRTransporterBackendWrapper(ITransporterDriver):
         assert isinstance(teachpoint.coordinates, CartesianCoordinates)
         plr_coords = convert_cartesian_to_plr_coord(teachpoint.coordinates, teachpoint.orientation)
         access = self._teachpoint_to_plr_access(teachpoint)
-        await self._backend.pick_plate(plr_coords, self.DEFAULT_PLATE_WIDTH, access)
+        await self._backend.pick_up_resource(plr_coords, self.DEFAULT_PLATE_WIDTH, access)
 
     async def place_at_coords(self, teachpoint: Teachpoint) -> None:
         """Place plate at coordinates specified by teachpoint."""
@@ -470,7 +470,7 @@ class PLRTransporterBackendWrapper(ITransporterDriver):
         assert isinstance(teachpoint.coordinates, CartesianCoordinates)
         plr_coords = convert_cartesian_to_plr_coord(teachpoint.coordinates, teachpoint.orientation)
         access = self._teachpoint_to_plr_access(teachpoint)
-        await self._backend.place_plate(plr_coords, access)
+        await self._backend.drop_resource(plr_coords, access)
 
     async def move_to_coords(self, teachpoint: Teachpoint) -> None:
         """Move to coordinates specified by teachpoint."""

@@ -3,11 +3,12 @@
 These tests verify the crossover detection and maneuver sequence logic.
 The actual motion control will need validation on real hardware.
 """
-from typing import Any, List, Union
+from typing import Any, List, Optional, Union
 
 import pytest
-from pylabrobot.arms.backend import SCARABackend, VerticalAccess, HorizontalAccess
+from pylabrobot.arms.backend import SCARABackend, VerticalAccess, HorizontalAccess, AccessPattern
 from pylabrobot.arms.precise_flex.coords import PreciseFlexCartesianCoords
+from pylabrobot.arms.standard import JointCoords
 from pylabrobot.resources.coordinate import Coordinate
 from pylabrobot.resources.rotation import Rotation
 
@@ -39,7 +40,7 @@ class MockPLRBackend(SCARABackend):
     async def move_to_safe(self) -> None:
         pass
 
-    async def get_joint_position(self) -> List[float]:
+    async def get_joint_position(self) -> JointCoords:
         return self._joints.copy()
 
     async def get_cartesian_position(self) -> PreciseFlexCartesianCoords:
@@ -48,7 +49,7 @@ class MockPLRBackend(SCARABackend):
             rotation=Rotation(x=0, y=0, z=0)
         )
 
-    async def move_to(self, position: Union[PreciseFlexCartesianCoords, List[float]]) -> None:
+    async def move_to(self, position: Union[PreciseFlexCartesianCoords, JointCoords]) -> None:
         self.calls.append(('move_to', (position,)))
 
     async def move_one_axis(self, axis: int, position: float, profile: int) -> None:
@@ -58,29 +59,30 @@ class MockPLRBackend(SCARABackend):
 
     async def approach(
         self,
-        position: Union[PreciseFlexCartesianCoords, List[float]],
-        access: Union[VerticalAccess, HorizontalAccess, None] = None
+        position: Union[PreciseFlexCartesianCoords, JointCoords],
+        access: Optional[AccessPattern] = None
     ) -> None:
         pass
 
-    async def pick_plate(
+    async def pick_up_resource(
         self,
-        position: Union[PreciseFlexCartesianCoords, List[float]],
-        access: Union[VerticalAccess, HorizontalAccess, None] = None
+        position: Union[PreciseFlexCartesianCoords, JointCoords],
+        plate_width: float,
+        access: Optional[AccessPattern] = None
     ) -> None:
-        self.calls.append(('pick_plate', (position, access)))
+        self.calls.append(('pick_up_resource', (position, plate_width, access)))
 
-    async def place_plate(
+    async def drop_resource(
         self,
-        position: Union[PreciseFlexCartesianCoords, List[float]],
-        access: Union[VerticalAccess, HorizontalAccess, None] = None
+        position: Union[PreciseFlexCartesianCoords, JointCoords],
+        access: Optional[AccessPattern] = None
     ) -> None:
-        self.calls.append(('place_plate', (position, access)))
+        self.calls.append(('drop_resource', (position, access)))
 
-    async def open_gripper(self) -> None:
+    async def open_gripper(self, gripper_width: float) -> None:
         pass
 
-    async def close_gripper(self) -> None:
+    async def close_gripper(self, gripper_width: float) -> None:
         pass
 
     async def is_gripper_closed(self) -> bool:
