@@ -203,7 +203,7 @@ class ITransporterDriver(ABC):
         """Get current joint positions.
 
         Returns:
-            JointCoordinates with current j1-j5 values (j6/gripper excluded).
+            JointCoordinates with current joint values (rail, base, shoulder, elbow, wrist).
         """
         ...
 

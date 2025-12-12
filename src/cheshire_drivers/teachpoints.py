@@ -181,10 +181,10 @@ class Teachpoint:
     def from_dict(cls, data: Dict[str, Any]) -> "Teachpoint":
         """Deserialize teachpoint from dictionary.
 
-        Detects coordinate type by presence of 'j1' (joint-space) or 'x' (Cartesian) keys.
-        Defaults to joint-space if neither is present.
+        Detects coordinate type by presence of 'base' (joint-space) or 'x' (Cartesian) keys.
+        Defaults to no coordinates if neither is present (waypoint without position).
         """
-        # Detect coordinate type: "base" = new format, "j1" = legacy format
+        # Detect coordinate type by field presence
         if "base" in data:
             coordinates: CartesianCoordinates | JointCoordinates | None = JointCoordinates(
                 base=float(data["base"]),
@@ -192,16 +192,6 @@ class Teachpoint:
                 elbow=float(data["elbow"]),
                 wrist=float(data["wrist"]),
                 rail=float(data.get("rail", 0.0)),
-            )
-            orientation = None
-        elif "j1" in data:
-            # Legacy format: j1=rail, j2=base, j3=shoulder, j4=elbow, j5=wrist
-            coordinates = JointCoordinates(
-                rail=float(data["j1"]),
-                base=float(data["j2"]),
-                shoulder=float(data["j3"]),
-                elbow=float(data["j4"]),
-                wrist=float(data["j5"]),
             )
             orientation = None
         elif "x" in data:
@@ -259,25 +249,15 @@ class Teachpoint:
         # Parse teachpoints and resolve access config references
         teachpoints: List[Teachpoint] = []
         for tp_data in data.get('teachpoints', []):
-            # Detect coordinate type: "base" = new format, "j1" = legacy format
+            # Detect coordinate type by field presence
             if 'base' in tp_data:
-                # New format: semantic joint names
+                # Joint coordinates
                 coordinates: CartesianCoordinates | JointCoordinates = JointCoordinates(
                     base=float(tp_data['base']),
                     shoulder=float(tp_data['shoulder']),
                     elbow=float(tp_data['elbow']),
                     wrist=float(tp_data['wrist']),
                     rail=float(tp_data.get('rail', 0.0))
-                )
-                orientation = None
-            elif 'j1' in tp_data:
-                # Legacy format: j1=rail, j2=base, j3=shoulder, j4=elbow, j5=wrist
-                coordinates = JointCoordinates(
-                    rail=float(tp_data['j1']),
-                    base=float(tp_data['j2']),
-                    shoulder=float(tp_data['j3']),
-                    elbow=float(tp_data['j4']),
-                    wrist=float(tp_data['j5'])
                 )
                 orientation = None
             else:
