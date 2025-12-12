@@ -478,9 +478,12 @@ class PLRTransporterBackendWrapper(ITransporterDriver):
         if await self._needs_crossover(teachpoint):
             await self._perform_crossover_maneuver()
 
-        assert isinstance(teachpoint.coordinates, CartesianCoordinates)
-        plr_coords = convert_cartesian_to_plr_coord(teachpoint.coordinates, teachpoint.orientation)
-        await self._backend.move_to(plr_coords)
+        if teachpoint.is_joint_space():
+            await self._move_to_joint_coords(teachpoint)
+        else:
+            assert isinstance(teachpoint.coordinates, CartesianCoordinates)
+            plr_coords = convert_cartesian_to_plr_coord(teachpoint.coordinates, teachpoint.orientation)
+            await self._backend.move_to(plr_coords)
 
     async def move_single_axis(self, axis: AxisName, position: float) -> None:
         """Move a single axis to absolute position."""
