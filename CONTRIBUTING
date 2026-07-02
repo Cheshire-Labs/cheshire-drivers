@@ -1,6 +1,6 @@
-# Contributing to Orca
+# Contributing to cheshire-drivers
 
-Thank you for your interest in contributing to **Orca**! Your contributions help make this project better for everyone. Please review the following guidelines to help us streamline the contribution process and maintain a high standard of quality.
+Thank you for your interest in contributing to **cheshire-drivers**! Your contributions help make this project better for everyone. Please review the following guidelines to help us streamline the contribution process and maintain a high standard of quality.
 
 ## Table of Contents
 
@@ -17,10 +17,10 @@ Thank you for your interest in contributing to **Orca**! Your contributions help
 
 ## How to Contribute
 
-1. **Fork the Repository**: Use the "Fork" button at the top of the Orca GitHub page to create a copy of the repo under your GitHub account.
+1. **Fork the Repository**: Use the "Fork" button at the top of the cheshire-drivers GitHub page to create a copy of the repo under your GitHub account.
 2. **Clone Your Fork**: Clone your forked repository to your local machine:
    ```bash
-   git clone https://github.com/cheshire-labs/orca.git
+   git clone https://github.com/Cheshire-Labs/cheshire-drivers.git
     ```
 3. **Create a Branch**: Create a new branch for your feature or bug fix:
     ```bash
@@ -36,7 +36,7 @@ Thank you for your interest in contributing to **Orca**! Your contributions help
     ```bash
     git push origin feature-or-bugfix-name
     ```
-7. **Submit a Pull Request**: Open a pull request (PR) from your branch to the dev branch of the main Orca repository. Describe your changes and reference any related issues.
+7. **Submit a Pull Request**: Open a pull request (PR) from your branch to the main branch of the cheshire-drivers repository. Describe your changes and reference any related issues.
 
 ## Suggestions
 
@@ -56,7 +56,7 @@ We welcome suggestions for new features! If you have an idea, please create a fe
 
 ## Pull Requests
 
-- **Branching**: Please base your changes on the dev branch.
+- **Branching**: Please base your changes on the main branch.
 
 - **PR Description**: Clearly explain what your pull request does, and reference any related issues or discussions.
 
@@ -79,7 +79,7 @@ We welcome suggestions for new features! If you have an idea, please create a fe
 - Run all tests locally before submitting your pull request.
 
 ## Documentation
-If your changes affect how Orca works, please update the relevant documentation. This includes the README, user guides, and any other relevant sections.
+If your changes affect how cheshire-drivers works, please update the relevant documentation. This includes the README, user guides, and any other relevant sections.
 
 ## License
-Cheshire Labs follows an open core business model, offering Orca under a dual license structure. To align with this model and the AGPL license, contributors need to submit a contributor license agreement.
+Cheshire Labs follows an open core business model, offering cheshire-drivers under a dual license structure. To align with this model and the AGPL license, contributors need to submit a contributor license agreement.
