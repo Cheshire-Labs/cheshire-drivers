@@ -1,23 +1,38 @@
 [project]
 name = "cheshire-drivers"
-version = "0.1.0"
+version = "1.0.0"
 description = "Shared driver layer for Cheshire Labs lab automation"
 readme = "README.md"
 requires-python = ">=3.10"
-license = {text = "AGPL-3.0"}
+license = {text = "SSPL-1.0"}
 authors = [
     {name = "Cheshire Labs"}
 ]
 
 dependencies = [
-    "pylabrobot[fw] @ git+https://github.com/Cheshire-Labs/pylabrobot.git@cheshire-v1.0.0",
+    # The consolidated fork trunk: upstream's tree plus our Opentrons capability stack and
+    # the plain-class Brooks arm. The Flex and the PF400 both run off that driver; the legacy
+    # backends behind the LH wrappers serve the OT-2, the STAR and the Chatterbox only.
+    "pylabrobot[serial,usb,ftdi,opentrons] @ git+https://github.com/Cheshire-Labs/pylabrobot.git@c674fa1e575332436160c4ff6592226611363da6",
+    "pydantic>=2.0",
+    "typing-extensions>=4.5",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=7.0",
     "pytest-asyncio>=0.21",
+    "pytest-timeout>=2.0",
 ]
+
+[tool.pytest.ini_options]
+# No driver test legitimately runs for two minutes; the whole suite is ~1 min.
+# A hang names the test that hung instead of dying at the CI job cap.
+addopts = "--timeout=120"
+
+# Keep libusb-package on a version that ships a cp312 wheel.
+[tool.uv]
+override-dependencies = ["libusb-package>=1.0.26.3,<1.0.27"]
 
 [build-system]
 requires = ["setuptools>=61.0", "wheel"]
@@ -27,4 +42,5 @@ build-backend = "setuptools.build_meta"
 where = ["src"]
 
 [tool.setuptools.package-data]
-"*" = ["py.typed"]
+"cheshire_drivers" = ["py.typed", "labware_seed.json"]
+"cheshire_source_text" = ["py.typed"]

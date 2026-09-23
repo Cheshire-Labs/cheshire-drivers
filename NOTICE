@@ -1,0 +1,9 @@
+Copyright (c) 2024-2026 Cheshire Labs.
+
+This software is licensed under the Server Side Public License, version 1,
+which is in the LICENSE file. The copyright line inside LICENSE is MongoDB's.
+It covers the text of the licence, not this software.
+
+src/cheshire_drivers/labware_seed.json is generated from the labware
+definitions in PyLabRobot (https://github.com/PyLabRobot/pylabrobot),
+Copyright (c) 2018 dgretton, used under the MIT License.

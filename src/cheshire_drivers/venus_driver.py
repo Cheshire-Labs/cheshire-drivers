@@ -2,9 +2,11 @@ import asyncio
 import json
 import logging
 import os
+import tempfile
 from typing import Any, Dict, Optional
 
 from cheshire_drivers.interfaces import IProtocolRunnerDriver
+from cheshire_drivers.protocol_runner_models import RunProtocolRequest
 
 cheshire_logger = logging.getLogger("cheshire_drivers")
 
@@ -85,12 +87,10 @@ class SimulationVenusProtocolDriver(IProtocolRunnerDriver):
         cheshire_logger.info(f"Executing command: {command} with options: {options}")
         await asyncio.sleep(self._sim_time)
 
-    async def run_protocol(self, protocol_filepath: str, params: Dict[str, Any] | None = None, options: Dict[str, Any] | None = None) -> None:
-        if options is None:
-            options = {}
-        if params is None:
-            params = {}
-        cheshire_logger.info(f"Running protocol: {protocol_filepath} with params: {params} and options: {options}")
+    async def run_protocol(self, request: RunProtocolRequest) -> None:
+        cheshire_logger.info(
+            f"Running protocol: {request.protocol_filepath} with params: {request.params}"
+        )
         await asyncio.sleep(self._sim_time)
 
     async def open(self) -> None:
@@ -128,7 +128,7 @@ class VenusProtocolDriver(IProtocolRunnerDriver):
         self._methods_folder = methods_folder
         self._is_initialized = False
         self._is_running = False
-        self._params_filepath = os.path.join(os.environ["TEMP"], "CheshireLabs\\Orca\\actionConfig.json")
+        self._params_filepath = os.path.join(tempfile.gettempdir(), "CheshireLabs", "Orca", "actionConfig.json")
         self._init_protocol: Optional[str]  = init_protocol
         self._picked_protocol: Optional[str]  = picked_protocol
         self._placed_protocol: Optional[str]  = placed_protocol
@@ -216,19 +216,32 @@ class VenusProtocolDriver(IProtocolRunnerDriver):
             if method is None:
                 raise KeyError("The venus method was not provided in the command options.  'method' must be included with command")
             params = options.get("params", {})
-            await self.run_protocol(method, params, options)
+            await self.run_protocol(RunProtocolRequest(protocol_filepath=method, params=params))
         else:
             raise NotImplementedError(f"The action '{command}' is unknown for {self._name} of type {type(self).__name__}")
 
-    async def run_protocol(self, protocol_filepath: str, params: Dict[str, Any] | None = None, options: Dict[str, Any] | None = None) -> None:
-        if params is None:
-            params = {}
-        if options is None:
-            options = {}
+    async def run_protocol(self, request: RunProtocolRequest) -> None:
+        method_path = self._method_inside_the_methods_folder(request.protocol_filepath)
+        params = dict(request.params)
         params["action"] = "run"
-        options["params"] = params
+        options = {"params": params}
         self._write_options_to_json_file(options)
-        return await self._execute_protocol(protocol_filepath)
+        return await self._execute_protocol(method_path)
+
+    def _method_inside_the_methods_folder(self, method: str) -> str:
+        """Resolve a method name under the methods folder, refusing to leave it.
+
+        The name arrives over the wire, and an unchecked one becomes argv to
+        HxRun.exe: an absolute path or a `..` hop would run any file on the box.
+        """
+        folder = os.path.realpath(self._methods_folder)
+        resolved = os.path.realpath(os.path.join(folder, method))
+        if resolved != folder and not resolved.startswith(folder + os.sep):
+            raise ValueError(
+                f"The method '{method}' resolves outside the methods folder "
+                f"'{self._methods_folder}'."
+            )
+        return resolved
 
     async def _execute_protocol(self, hsl_method_path: str) -> None:
         if not os.path.exists(hsl_method_path):

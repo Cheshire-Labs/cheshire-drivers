@@ -39,3 +39,15 @@ coverage.xml
 
 # Claude
 claude.md
+
+# Local-only developer notes (not committed)
+CLAUDE.local.md
+
+# uv: no committed lock (library; editable path sources are dev-only)
+uv.lock
+
+# local test logs
+tests/logs/
+
+# A local artifact: this repo installs from pyproject with pip/uv, not poetry.
+poetry.lock
