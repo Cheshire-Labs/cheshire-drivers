@@ -8,6 +8,12 @@ Shared driver layer for Cheshire Labs lab automation. This package provides driv
 pip install -e .
 ```
 
+**Use a dedicated virtual environment.** This installs a pinned commit of
+[our PyLabRobot fork](https://github.com/Cheshire-Labs/pylabrobot) under the
+name `pylabrobot`, so it replaces an upstream PyLabRobot in the same
+environment, and a later `pip install pylabrobot` breaks the Opentrons Flex
+imports here. The fork carries the Flex backend, which upstream does not have.
+
 ## Usage
 
 ```python
@@ -82,7 +88,7 @@ Adapters that wrap PyLabRobot backends to implement our interfaces:
 | `PLRShakerBackendWrapper` | `ShakerBackend` |
 | `PLRSealerBackendWrapper` | `SealerBackend` |
 | `PLRCentrifugeBackendWrapper` | `CentrifugeBackend` |
-| `PLRTransporterBackendWrapper` | `ArmBackend` |
+| `PLRTransporterBackendWrapper` | `PreciseFlex` (imported as `PLRArmBackend`) |
 
 ### Simulation Drivers
 
@@ -120,17 +126,23 @@ Position management for robotic arms:
 | `SimulationVenusProtocolDriver` | Simulated Venus driver |
 | `NullPlatePadDriver` | Placeholder for locations without active devices |
 
+## Contributing
+
+See [CONTRIBUTING](./CONTRIBUTING) for how contributions reach this repository.
+
+Contributors must sign the [Cheshire Labs Contributor Agreement](https://cla-assistant.io/Cheshire-Labs/cheshire-drivers), which assigns copyright in the contribution to Cheshire Labs.
+
 ## License
 
-This project is licensed under the **GNU Affero General Public License v3.0 (AGPL-3.0-only)**.
-
-See the [LICENSE](LICENSE) file for the full license text.
+Source-available under the [Server Side Public License v1 (SSPL-1.0)](LICENSE)
+from 1.0.0 onward. Earlier releases were AGPL-3.0.
+[NOTICE](./NOTICE) names the copyright holder.
 
 ## Acknowledgments
 
 ### PyLabRobot
 
-This project wraps and builds upon [PyLabRobot](https://github.com/PyLabRobot/pylabrobot), an open-source, hardware-agnostic interface for liquid-handling robots and accessories.
+This project wraps and builds upon [PyLabRobot](https://github.com/PyLabRobot/pylabrobot), an open-source, hardware-agnostic interface for liquid-handling robots and accessories. It installs from our fork rather than from upstream; see Installation above for what that means for your environment.
 
 If you use this software in academic research, please cite PyLabRobot:
 
