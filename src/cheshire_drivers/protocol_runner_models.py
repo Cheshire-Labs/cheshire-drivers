@@ -17,6 +17,15 @@ from pydantic import Field
 from cheshire_drivers.liquid_handler_models import _StrictModel
 
 
+class LabwareHandoffRequest(_StrictModel):
+    """A labware a transporter is about to move onto or off a protocol runner, or just did."""
+
+    labware_name: str = Field(..., description="Name of the labware instance")
+    labware_type: str = Field(..., description="Labware type of the instance")
+    site: str | None = Field(default=None, description="The runner's site the labware goes to or leaves")
+    barcode: str | None = Field(default=None, description="The labware's barcode, when it has one")
+
+
 class RunProtocolRequest(_StrictModel):
     protocol_filepath: str = Field(..., description="Path to the protocol file to execute")
     params: Dict[str, Any] = Field(

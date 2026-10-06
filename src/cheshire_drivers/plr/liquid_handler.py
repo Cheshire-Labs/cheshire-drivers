@@ -22,6 +22,7 @@ from cheshire_drivers.interfaces import (
     IPipetteMotionDriver,
     IWidthGripperJawDriver,
 )
+from cheshire_drivers.labware_handoff import IgnoresLabwareHandoff
 from cheshire_drivers.pipette_motion_models import (
     ChannelPosition,
     GetChannelPositionRequest,
@@ -52,7 +53,7 @@ class ChatterboxLiquidHandlerDriver(PLRLiquidHandlerWrapper):
 
 
 class ChatterboxLiquidHandlerWithProtocolDriver(
-    ChatterboxLiquidHandlerDriver, ILiquidHandlerWithProtocolDriver
+    ChatterboxLiquidHandlerDriver, ILiquidHandlerWithProtocolDriver, IgnoresLabwareHandoff
 ):
     """Deck-modeling sim LH that also satisfies IProtocolRunner.
 

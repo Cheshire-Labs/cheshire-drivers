@@ -1,6 +1,6 @@
 [project]
 name = "cheshire-drivers"
-version = "1.0.0"
+version = "1.1.0"
 description = "Shared driver layer for Cheshire Labs lab automation"
 readme = "README.md"
 requires-python = ">=3.10"

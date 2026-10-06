@@ -34,6 +34,7 @@ from cheshire_drivers.interfaces import ILiquidProbeDriver as ILiquidProbeDriver
 from cheshire_drivers.interfaces import IPipetteMotionDriver as IPipetteMotionDriver
 from cheshire_drivers.interfaces import IPlateWasherDriver as IPlateWasherDriver
 from cheshire_drivers.interfaces import IProtocolRunnerDriver as IProtocolRunnerDriver
+from cheshire_drivers.labware_handoff import IgnoresLabwareHandoff as IgnoresLabwareHandoff
 from cheshire_drivers.interfaces import IReaderDriver as IReaderDriver
 from cheshire_drivers.interfaces import ISealerDriver as ISealerDriver
 from cheshire_drivers.interfaces import IShakerDriver as IShakerDriver

@@ -59,7 +59,7 @@ from cheshire_drivers.thermocycler_models import (
 )
 from cheshire_drivers.delidder_models import DelidRequest
 from cheshire_drivers.gantry_models import ParkGantryRequest
-from cheshire_drivers.protocol_runner_models import RunProtocolRequest
+from cheshire_drivers.protocol_runner_models import LabwareHandoffRequest, RunProtocolRequest
 from cheshire_drivers.reader_models import ReadRequest
 from cheshire_drivers.sealer_models import SealRequest
 from cheshire_drivers.shaker_models import (
@@ -340,6 +340,28 @@ class IProtocolRunnerDriver(BaseDriver, ABC):
     @command_timing(typical=600.0, max=14400.0)
     async def run_protocol(self, request: RunProtocolRequest) -> None:
         """Execute a protocol run command."""
+        ...
+
+    # The four handoff hooks: a vendor protocol often has to know what labware
+    # a transporter brings to or takes from which site.
+    @abstractmethod
+    @command_timing(typical=60.0, max=3600.0)
+    async def prepare_for_place(self, request: LabwareHandoffRequest) -> None:
+        ...
+
+    @abstractmethod
+    @command_timing(typical=60.0, max=3600.0)
+    async def notify_placed(self, request: LabwareHandoffRequest) -> None:
+        ...
+
+    @abstractmethod
+    @command_timing(typical=60.0, max=3600.0)
+    async def prepare_for_pick(self, request: LabwareHandoffRequest) -> None:
+        ...
+
+    @abstractmethod
+    @command_timing(typical=60.0, max=3600.0)
+    async def notify_picked(self, request: LabwareHandoffRequest) -> None:
         ...
 
 
