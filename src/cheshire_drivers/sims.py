@@ -15,6 +15,7 @@ from cheshire_drivers.faults import FaultRegistry, FaultSpec
 from cheshire_drivers.gantry_models import ParkGantryRequest
 from cheshire_drivers.homing_models import HomeRequest
 from cheshire_drivers.labware_seed import LabwareSeedEntry, TipRackSeedEntry, load_labware_seed
+from cheshire_drivers.labware_handoff import IgnoresLabwareHandoff
 from cheshire_drivers.interfaces import (
     IGantryParkingDriver,
     IHomeableDriver,
@@ -22,7 +23,7 @@ from cheshire_drivers.interfaces import (
     IDelidderDriver, ILiquidHandlerDriver, ILiquidHandlerWithProtocolDriver,
     ILiquidProbeDriver,
     IPlateWasherDriver,
-    IProtocolRunnerDriver, IReaderDriver, ISealerDriver, IShakerDriver,
+    IReaderDriver, ISealerDriver, IShakerDriver,
     IStorageDriver, ITempGettableDriver, ITempSettableDriver,
     IThermocyclerDriver, ITransporterDriver, IWasteDriver,
 )
@@ -402,7 +403,7 @@ class TempGettableSimMixin(Sim, ITempGettableDriver):
         return 25.0  # Mock temperature value
 
 @_apply_fault_hook
-class ProtocolRunnerSimMixin(Sim, IProtocolRunnerDriver):
+class ProtocolRunnerSimMixin(Sim, IgnoresLabwareHandoff):
     """Mixin for protocol runner functionality"""
 
     async def run_protocol(self, request: RunProtocolRequest) -> None:

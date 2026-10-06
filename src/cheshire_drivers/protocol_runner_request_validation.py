@@ -5,16 +5,24 @@ from typing import Any, Dict, Tuple
 from pydantic import BaseModel
 
 from cheshire_drivers.command_responses import EmptyCommandResponse
-from cheshire_drivers.protocol_runner_models import RunProtocolRequest
+from cheshire_drivers.protocol_runner_models import LabwareHandoffRequest, RunProtocolRequest
 
 
 PROTOCOL_RUNNER_REQUEST_MODELS: Dict[str, Tuple[str, type[BaseModel]]] = {
     "run_protocol": ("request", RunProtocolRequest),
+    "prepare_for_place": ("request", LabwareHandoffRequest),
+    "notify_placed": ("request", LabwareHandoffRequest),
+    "prepare_for_pick": ("request", LabwareHandoffRequest),
+    "notify_picked": ("request", LabwareHandoffRequest),
 }
 
 
 PROTOCOL_RUNNER_RESPONSE_MODELS: Dict[str, type[BaseModel]] = {
     "run_protocol": EmptyCommandResponse,
+    "prepare_for_place": EmptyCommandResponse,
+    "notify_placed": EmptyCommandResponse,
+    "prepare_for_pick": EmptyCommandResponse,
+    "notify_picked": EmptyCommandResponse,
 }
 
 

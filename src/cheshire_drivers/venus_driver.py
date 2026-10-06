@@ -5,8 +5,9 @@ import os
 import tempfile
 from typing import Any, Dict, Optional
 
+from cheshire_drivers.driver_errors import DriverError
 from cheshire_drivers.interfaces import IProtocolRunnerDriver
-from cheshire_drivers.protocol_runner_models import RunProtocolRequest
+from cheshire_drivers.protocol_runner_models import LabwareHandoffRequest, RunProtocolRequest
 
 cheshire_logger = logging.getLogger("cheshire_drivers")
 
@@ -31,6 +32,7 @@ class SimulationVenusProtocolDriver(IProtocolRunnerDriver):
         self._sim_time = sim_time
         self._exe_path = exe_path
         self._methods_folder = methods_folder
+        self._is_connected = False
         self._is_initialized = False
         self._is_running = False
         self._init_protocol: Optional[str]  = init_protocol
@@ -67,20 +69,22 @@ class SimulationVenusProtocolDriver(IProtocolRunnerDriver):
     def is_running(self) -> bool:
         return self._is_running
 
-    async def prepare_for_place(self, labware_name: str, labware_type: str, barcode: Optional[str] = None, alias: Optional[str] = None) -> None:
-        cheshire_logger.info(f"Running {self._prepare_place_protocol} for {labware_name} of type {labware_type}")
-        await asyncio.sleep(self._sim_time)
+    async def prepare_for_place(self, request: LabwareHandoffRequest) -> None:
+        await self._sim_hook(self._prepare_place_protocol, request)
 
-    async def prepare_for_pick(self, labware_name: str, labware_type: str, barcode: Optional[str] = None, alias: Optional[str] = None) -> None:
-        cheshire_logger.info(f"Running {self._prepare_pick_protocol} for {labware_name} of type {labware_type}")
-        await asyncio.sleep(self._sim_time)
+    async def prepare_for_pick(self, request: LabwareHandoffRequest) -> None:
+        await self._sim_hook(self._prepare_pick_protocol, request)
 
-    async def notify_picked(self, labware_name: str, labware_type: str, barcode: Optional[str] = None, alias: Optional[str] = None) -> None:
-        cheshire_logger.info(f"Running {self._picked_protocol} for {labware_name} of type {labware_type}")
-        await asyncio.sleep(self._sim_time)
+    async def notify_picked(self, request: LabwareHandoffRequest) -> None:
+        await self._sim_hook(self._picked_protocol, request)
 
-    async def notify_placed(self, labware_name: str, labware_type: str, barcode: Optional[str] = None, alias: Optional[str] = None) -> None:
-        cheshire_logger.info(f"Running {self._placed_protocol} for {labware_name} of type {labware_type}")
+    async def notify_placed(self, request: LabwareHandoffRequest) -> None:
+        await self._sim_hook(self._placed_protocol, request)
+
+    async def _sim_hook(self, method: Optional[str], request: LabwareHandoffRequest) -> None:
+        if method is None:
+            return
+        cheshire_logger.info(f"Running {method} for {request.labware_name} at {request.site}")
         await asyncio.sleep(self._sim_time)
 
     async def execute(self, command: str, options: Dict[str, Any]) -> None:
@@ -126,8 +130,10 @@ class VenusProtocolDriver(IProtocolRunnerDriver):
         self._name = name
         self._exe_path = exe_path
         self._methods_folder = methods_folder
+        self._is_connected = False
         self._is_initialized = False
         self._is_running = False
+        # The Orca submethod library reads its values from this file.
         self._params_filepath = os.path.join(tempfile.gettempdir(), "CheshireLabs", "Orca", "actionConfig.json")
         self._init_protocol: Optional[str]  = init_protocol
         self._picked_protocol: Optional[str]  = picked_protocol
@@ -156,59 +162,40 @@ class VenusProtocolDriver(IProtocolRunnerDriver):
         self._is_connected = False
 
     async def initialize(self) -> None:
-        if self._init_protocol is not None:
-            await self.execute("run", {"method": self._init_protocol})
-
-        # create the temporary folder for the parameters file
-        os.makedirs(os.path.dirname(self._params_filepath), exist_ok=True)
         if not os.path.exists(self._exe_path):
-            raise FileNotFoundError("The executable path for the Venus driver was not provided and could not be found in the default locations")
-
+            raise FileNotFoundError(f"HxRun.exe was not found at '{self._exe_path}'.")
+        os.makedirs(os.path.dirname(self._params_filepath), exist_ok=True)
+        if self._init_protocol is not None:
+            await self._run_method(self._init_protocol, {"action": "initialize"})
         self._is_initialized = True
 
     @property
     def is_running(self) -> bool:
         return self._is_running
 
-    async def prepare_for_place(self, labware_name: str, labware_type: str, barcode: Optional[str] = None, alias: Optional[str] = None) -> None:
-        if self._prepare_place_protocol is not None:
-            await self.run_protocol(self._prepare_place_protocol, {
-                "action": "prepare_for_place",
-                "labware_name": labware_name,
-                "labware_type": labware_type,
-                "barcode": barcode,
-                "alias": alias
-            })
+    async def prepare_for_place(self, request: LabwareHandoffRequest) -> None:
+        await self._run_hook(self._prepare_place_protocol, "prepare_for_place", request)
 
-    async def prepare_for_pick(self, labware_name: str, labware_type: str, barcode: Optional[str] = None, alias: Optional[str] = None) -> None:
-        if self._prepare_pick_protocol is not None:
-            await self.run_protocol(self._prepare_pick_protocol, {
-                "action": "prepare_for_pick",
-                "labware_name": labware_name,
-                "labware_type": labware_type,
-                "barcode": barcode,
-                "alias": alias
-            })
+    async def prepare_for_pick(self, request: LabwareHandoffRequest) -> None:
+        await self._run_hook(self._prepare_pick_protocol, "prepare_for_pick", request)
 
-    async def notify_picked(self, labware_name: str, labware_type: str, barcode: Optional[str] = None, alias: Optional[str] = None) -> None:
-        if self._picked_protocol is not None:
-            await self.run_protocol(self._picked_protocol, {
-                "action": "notify_picked",
-                "labware_name": labware_name,
-                "labware_type": labware_type,
-                "barcode": barcode,
-                "alias": alias
-            })
+    async def notify_picked(self, request: LabwareHandoffRequest) -> None:
+        await self._run_hook(self._picked_protocol, "notify_picked", request)
 
-    async def notify_placed(self, labware_name: str, labware_type: str, barcode: Optional[str] = None, alias: Optional[str] = None) -> None:
-        if self._placed_protocol is not None:
-            await self.run_protocol(self._placed_protocol, {
-                "action": "notify_placed",
-                "labware_name": labware_name,
-                "labware_type": labware_type,
-                "barcode": barcode,
-                "alias": alias
-            })
+    async def notify_placed(self, request: LabwareHandoffRequest) -> None:
+        await self._run_hook(self._placed_protocol, "notify_placed", request)
+
+    async def _run_hook(self, method: Optional[str], action: str, request: LabwareHandoffRequest) -> None:
+        if method is None:
+            return
+        # The Orca library reads these with GetConfigProperty_String, so a missing value is "", never null.
+        await self._run_method(method, {
+            "action": action,
+            "labware_name": request.labware_name,
+            "labware_type": request.labware_type,
+            "site": request.site or "",
+            "barcode": request.barcode or "",
+        })
 
     async def execute(self, command: str, options: Dict[str, Any]) -> None:
         if command == "run_protocol":
@@ -221,12 +208,22 @@ class VenusProtocolDriver(IProtocolRunnerDriver):
             raise NotImplementedError(f"The action '{command}' is unknown for {self._name} of type {type(self).__name__}")
 
     async def run_protocol(self, request: RunProtocolRequest) -> None:
-        method_path = self._method_inside_the_methods_folder(request.protocol_filepath)
-        params = dict(request.params)
-        params["action"] = "run"
-        options = {"params": params}
-        self._write_options_to_json_file(options)
-        return await self._execute_protocol(method_path)
+        await self._run_method(request.protocol_filepath, {**request.params, "action": "run"})
+
+    async def open(self) -> None:
+        if self._open_protocol:
+            await self._run_method(self._open_protocol, {"action": "open"})
+
+    async def close(self) -> None:
+        if self._close_protocol:
+            await self._run_method(self._close_protocol, {"action": "close"})
+
+    async def _run_method(self, method: str, params: Dict[str, Any]) -> None:
+        method_path = self._method_inside_the_methods_folder(method)
+        if not os.path.exists(method_path):
+            raise FileNotFoundError(f"The method '{method}' does not exist in the methods folder '{self._methods_folder}'.")
+        self._write_params_file(params)
+        await self._execute_protocol(method_path)
 
     def _method_inside_the_methods_folder(self, method: str) -> str:
         """Resolve a method name under the methods folder, refusing to leave it.
@@ -244,34 +241,22 @@ class VenusProtocolDriver(IProtocolRunnerDriver):
         return resolved
 
     async def _execute_protocol(self, hsl_method_path: str) -> None:
-        if not os.path.exists(hsl_method_path):
-            original_path = hsl_method_path
-            hsl_method_path = os.path.join(self._methods_folder, hsl_method_path)
-            if not os.path.exists(hsl_method_path):
-                raise FileNotFoundError(f"The method '{original_path}' does not exist in the provided path or in the methods folder '{self._methods_folder}'.")
         self._is_running = True
-
         try:
             process = await asyncio.create_subprocess_exec(
                 self._exe_path, "-t", hsl_method_path,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE
             )
-
-            stdout, stderr = await process.communicate()
-
-            if process.returncode != 0:
-                print(f"Venus error: {stderr.decode().strip()}")
+            _, stderr = await process.communicate()
         finally:
             self._is_running = False
+        if process.returncode != 0:
+            raise DriverError(
+                f"Venus method '{hsl_method_path}' failed with exit code {process.returncode}: "
+                f"{stderr.decode(errors='replace').strip()}"
+            )
 
-    def _write_options_to_json_file(self, options: Dict[str, Any]) -> None:
-        json.dump(options, open(self._params_filepath, "w"))
-
-    async def open(self) -> None:
-        if self._open_protocol:
-            await self._execute_protocol(self._open_protocol)
-
-    async def close(self) -> None:
-        if self._close_protocol:
-            await self._execute_protocol(self._close_protocol)
+    def _write_params_file(self, params: Dict[str, Any]) -> None:
+        with open(self._params_filepath, "w") as params_file:
+            json.dump({"params": params}, params_file)

@@ -165,16 +165,14 @@ class TestDeriveCapabilities:
         assert {"connect", "disconnect"} <= commands
         assert "is_connected" not in commands
 
-    def test_venus_extras_include_all_handoff_callbacks(self) -> None:
-        # MoveAction handoff callbacks + sim/lifecycle methods. Per user direction
-        # all are wire-exposed so operators can invoke them mid-debug.
+    def test_venus_handoff_callbacks_are_reachable_over_the_wire(self) -> None:
+        # The handoff callbacks are wire-exposed so operators can invoke them
+        # mid-debug. They are on the protocol-runner contract, so not extras.
         caps = derive_capabilities(venus_driver.VenusProtocolDriver)
-        for expected in {
-            "execute",
-            "prepare_for_pick", "prepare_for_place",
-            "notify_picked", "notify_placed",
-        }:
-            assert expected in caps, f"Venus is missing expected extra {expected!r}: caps={sorted(caps)}"
+        assert "execute" in caps, f"Venus is missing expected extra 'execute': caps={sorted(caps)}"
+        handoff = {"prepare_for_pick", "prepare_for_place", "notify_picked", "notify_placed"}
+        assert handoff <= interface_command_names(IProtocolRunnerDriver)
+        assert not (handoff & set(caps))
         # IProtocolRunner-declared method must NOT be in extras.
         assert "run_protocol" not in caps
         # Lifecycle moved onto the contract, so it leaves the extras and has to

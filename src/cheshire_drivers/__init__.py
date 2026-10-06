@@ -51,6 +51,7 @@ _EXPORTS: dict[str, str] = {
     "IPlate": "cheshire_drivers.labware_interfaces",
     "IPlateWasherDriver": "cheshire_drivers.interfaces",
     "IProtocolRunnerDriver": "cheshire_drivers.interfaces",
+    "IgnoresLabwareHandoff": "cheshire_drivers.labware_handoff",
     "IReaderDriver": "cheshire_drivers.interfaces",
     "ISealerDriver": "cheshire_drivers.interfaces",
     "IShakerDriver": "cheshire_drivers.interfaces",
