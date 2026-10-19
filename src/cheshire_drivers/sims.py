@@ -133,7 +133,7 @@ class Sim(ABC):
     @abstractmethod
     def name(self) -> str: ...
     @abstractmethod
-    async def _sim(self, message: str, duration: float | None = None) -> None: ...
+    async def _sim(self, message: str) -> None: ...
 
     _faults: FaultRegistry
     _faultable_methods: ClassVar[frozenset[str]] = frozenset()
@@ -221,56 +221,28 @@ def _validate_fault_specs(
 
 class SimStrategy(ABC):
     @abstractmethod
-    async def sim(self, prompt: str, duration: float | None = None) -> None:
-        """Simulate an operation.
-
-        `duration` is the typed duration (seconds) the caller knows about.
-        Strategies that model real time consume it; strategies that model
-        operator interaction may ignore it. Pass `None` when the call site
-        has no duration to advertise.
-        """
+    async def sim(self, prompt: str) -> None:
+        """Stand in for one driver operation. Orca paces simulated steps; a
+        strategy does not model how long a step takes."""
 
 
 class SleepSim(SimStrategy):
-    """Sleep-based sim strategy with optional duration scaling.
+    """Sleeps a flat `sim_time` seconds on every call (default 0.2 s)."""
 
-    `sim_time` is the unconditional sleep applied to every call. `scale_factor`
-    multiplies the typed `duration` when provided; the actual wait is
-    `sim_time + max(duration, 0) * scale_factor`.
-
-    Defaults preserve the historical fast-test behavior: `sim_time=0.2`,
-    `scale_factor=0.0` ignores duration entirely and waits a flat 0.2s. Lab
-    simulators bump `scale_factor` (1.0 for real-time, 0.001 for compressed
-    realism) to make sims honor caller-supplied durations.
-    """
-
-    def __init__(
-        self, sim_time: float = 0.2, scale_factor: float = 0.0,
-    ) -> None:
+    def __init__(self, sim_time: float = 0.2) -> None:
         self.sim_time = sim_time
-        self.scale_factor = scale_factor
 
-    async def sim(self, prompt: str, duration: float | None = None) -> None:
-        wait = self.sim_time
-        if duration is not None and self.scale_factor > 0.0 and duration > 0.0:
-            wait += duration * self.scale_factor
-        prompt = f"{prompt} (simulated wait for {wait} seconds)"
-        logger.info(prompt)
-        await asyncio.sleep(wait)
+    async def sim(self, prompt: str) -> None:
+        logger.info(f"{prompt} (simulated wait for {self.sim_time} seconds)")
+        await asyncio.sleep(self.sim_time)
 
 
 class HumanSim(SimStrategy):
-    """Waits for the user to press Enter without blocking the event loop.
-
-    Operator-driven strategy: the wait is bounded by human input, not by the
-    caller's `duration`. The signature accepts `duration` to satisfy the
-    `SimStrategy` contract; the value is ignored.
-    """
+    """Waits for the user to press Enter without blocking the event loop."""
     def __init__(self, prompt_suffix: str = " Press Enter to continue.") -> None:
         self.prompt_suffix = prompt_suffix
 
-    async def sim(self, prompt: str, duration: float | None = None) -> None:
-        del duration
+    async def sim(self, prompt: str) -> None:
         full = f"{prompt}{self.prompt_suffix}"
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, input, full)
@@ -327,8 +299,8 @@ class BaseSimDriver:
         await self._sim(f"Closing {self.name}...")
         logger.info(f"{self.name} close door successfully")
 
-    async def _sim(self, message: str, duration: float | None = None) -> None:
-        await self._sim_strategy.sim(message, duration=duration)
+    async def _sim(self, message: str) -> None:
+        await self._sim_strategy.sim(message)
 
 
 # Mixins for simulation functionality
@@ -341,7 +313,6 @@ class ShakerSimMixin(Sim, IShakerDriver):
     async def shake(self, request: ShakeRequest) -> None:
         await self._sim(
             f"Shaking at speed {request.speed} for {request.duration} seconds...",
-            duration=request.duration,
         )
         logger.info("Shaking completed successfully.")
 
@@ -378,7 +349,6 @@ class SealerSimMixin(Sim, ISealerDriver):
     async def seal(self, request: SealRequest) -> None:
         await self._sim(
             f"Sealing at {request.temperature}C for {request.duration} seconds...",
-            duration=request.duration,
         )
         logger.info("Sealing completed successfully.")
 
@@ -430,7 +400,6 @@ class CentrifugeSimMixin(Sim, ICentrifugeDriver):
     async def centrifuge(self, request: CentrifugeRequest) -> None:
         await self._sim(
             f"Spinning centrifuge for {request.duration} seconds at {request.g}g...",
-            duration=request.duration,
         )
         logger.info("Centrifuge spin completed successfully.")
 

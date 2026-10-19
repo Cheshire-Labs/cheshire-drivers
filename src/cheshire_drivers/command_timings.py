@@ -29,8 +29,9 @@ F = TypeVar("F", bound=Callable[..., object])
 class CommandTiming(BaseModel):
     """Logical-duration metadata for a single driver command.
 
-    ``typical_seconds`` is the expected normal-case duration -- informational,
-    surfaced on operator dashboards via ``MethodInfo.duration``.
+    ``typical_seconds`` is the expected normal-case duration. It is surfaced
+    on operator dashboards via ``MethodInfo.duration``, and orca uses it as the
+    simulated length of a step whose call carries no ``duration`` of its own.
     ``max_seconds`` is the hard upper bound the dispatcher uses to decide
     when a command has overrun.
     """

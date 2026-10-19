@@ -25,7 +25,7 @@ from cheshire_drivers.plr.backends import get_plr_backend_class
     ],
 )
 def test_every_shipped_backend_name_resolves(backend_name: str) -> None:
-    """These names appear in shipped example configs and the lab-sim harness."""
+    """These names appear in shipped example configs."""
     assert isinstance(get_plr_backend_class(backend_name), type)
 
 
