@@ -14,6 +14,7 @@ from typing_extensions import Self
 
 from pydantic import model_validator
 
+from cheshire_drivers.gantry_models import GantryJogRequest
 from cheshire_drivers.liquid_handler_models import _StrictModel
 
 ZReference = Literal["tip_end", "stop_disk"]
@@ -38,7 +39,7 @@ def require_tip_end_datum(z_reference: ZReference) -> None:
             "Re-issue the command with z_reference='tip_end'."
         )
 
-class MoveChannelToRequest(_StrictModel):
+class MoveChannelToRequest(GantryJogRequest):
     """Move one channel to an absolute deck-frame position (mm).
 
     Only the axes supplied are commanded; the rest hold their current value. So
@@ -58,8 +59,11 @@ class MoveChannelToRequest(_StrictModel):
             raise ValueError("MoveChannelToRequest: supply at least one of x, y, z to move.")
         return self
 
+    def moves_in_xy(self) -> bool:
+        return self.x is not None or self.y is not None
 
-class MoveChannelRelativeRequest(_StrictModel):
+
+class MoveChannelRelativeRequest(GantryJogRequest):
     """Jog one channel by a delta on each supplied axis, from its current position (mm).
 
     No z_reference: a relative delta is datum-independent (tip_end and stop_disk are the same
@@ -75,6 +79,9 @@ class MoveChannelRelativeRequest(_StrictModel):
         if self.dx is None and self.dy is None and self.dz is None:
             raise ValueError("MoveChannelRelativeRequest: supply at least one of dx, dy, dz to jog.")
         return self
+
+    def moves_in_xy(self) -> bool:
+        return bool(self.dx) or bool(self.dy)
 
 
 class GetChannelPositionRequest(_StrictModel):

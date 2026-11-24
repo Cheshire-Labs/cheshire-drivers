@@ -19,12 +19,8 @@ from cheshire_drivers.liquid_handler_models import _StrictModel
 
 
 class ShakeRequest(_StrictModel):
-    # ge=0 (not gt) preserves the older contract: callers historically passed
-    # any float and the driver accepted it. Tests rely on duration=0 for
-    # variable-override propagation checks; physical zero-shake is a valid
-    # no-op in those harness paths. RPM caps live at the REST/MCP layer.
-    speed: float = Field(..., ge=0, description="Shake speed in revolutions per minute (RPM)")
-    duration: float = Field(..., ge=0, description="Shake duration in seconds")
+    speed: float = Field(..., gt=0, le=2000, description="Shake speed in revolutions per minute (RPM)")
+    duration: float = Field(..., gt=0, description="Shake duration in seconds")
 
 
 class StopShakingRequest(_StrictModel):

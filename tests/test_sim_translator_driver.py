@@ -112,24 +112,6 @@ class TestCarriageInvariantOnOwnOps:
                 PlaceAtCoordsRequest(teachpoint=_teachpoint("t1_start"), labware_type="Plate_96", handling=SEED_MOVE_PARAMETERS)
             )
 
-    @pytest.mark.asyncio
-    async def test_external_control_place_is_noop_not_rejected(self) -> None:
-        """An external-control place is a world no-op in the base; the carriage
-        guard must defer to it, not reject, even with a sibling occupied."""
-        driver = _translator()
-        driver._seed_resource("t1_end", _make_plate("camper"))
-
-        await driver.place_at_coords(
-            PlaceAtCoordsRequest(
-                teachpoint=_teachpoint("t1_start"),
-                labware_type="Plate_96",
-                external_control=True,
-                handling=SEED_MOVE_PARAMETERS,
-            )
-        )
-
-        assert driver._resource_at("t1_start") is None
-
 
 class TestSingleCarriageNotExposed:
     """single_carriage is engine-read metadata, never a wire command. It must

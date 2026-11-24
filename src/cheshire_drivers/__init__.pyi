@@ -90,7 +90,6 @@ from cheshire_drivers.plr.transporter_wrapper import PLRArmBackend as PLRArmBack
 from cheshire_drivers.plr.transporter_wrapper import PLRTransporterBackendWrapper as PLRTransporterBackendWrapper
 from cheshire_drivers.plr.transporter_wrapper import convert_cartesian_to_plr_coord as convert_cartesian_to_plr_coord
 from cheshire_drivers.plr.transporter_wrapper import convert_joint_to_plr_dict as convert_joint_to_plr_dict
-from cheshire_drivers.plr.transporter_wrapper import transporter_driver as transporter_driver
 
 from cheshire_drivers.plr_wrappers import PLRCentrifugeBackend as PLRCentrifugeBackend
 from cheshire_drivers.plr_wrappers import PLRCentrifugeBackendWrapper as PLRCentrifugeBackendWrapper

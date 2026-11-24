@@ -55,6 +55,6 @@ async def test_a_shake_that_runs_its_duration_still_stops_the_motor() -> None:
     backend = _RecordingShaker()
     shaker = PLRShakerBackendWrapper(backend)
 
-    await shaker.shake(ShakeRequest(speed=300.0, duration=0.0))
+    await shaker.shake(ShakeRequest(speed=300.0, duration=0.01))
 
     assert backend.calls == ["start_shaking", "stop_shaking"]

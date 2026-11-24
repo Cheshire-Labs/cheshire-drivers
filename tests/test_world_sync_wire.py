@@ -2,7 +2,7 @@
 
 Pins down:
   * `seed_position` / `ensure_seeded` / `unseed_position` Request models
-    survive `wrap_transporter_payload` round trips with `LabwareIdentity`
+    survive command-table round trips with `LabwareIdentity`
     intact.
   * `SimTransporterDriver` honors the wire ops via in-memory placeholder
     PLR resources, with the expected idempotency / conflict semantics.
@@ -32,9 +32,9 @@ from cheshire_drivers.transporter_models import (
     SeedPositionRequest,
     UnseedPositionRequest,
 )
-from cheshire_drivers.transporter_request_validation import (
-    wrap_transporter_payload,
-)
+from pydantic import JsonValue
+
+from cheshire_drivers.command_table import COMMANDS, DriverKwargs
 
 
 def _identity(labware_id: str = "abc") -> LabwareIdentity:
@@ -59,13 +59,19 @@ def _fast_driver(name: str = "sim_arm") -> SimTransporterDriver:
     return SimTransporterDriver(name=name, sim_strategy=SleepSim(sim_time=0.0))
 
 
+def _wrap(command: str, params: dict[str, JsonValue]) -> DriverKwargs:
+    found = COMMANDS.find({"ITransporter"}, command)
+    assert found is not None, command
+    return found.driver_kwargs(params)
+
+
 class TestWireRoundTrip:
     def test_seed_position_round_trip(self) -> None:
         wire = {
             "position_id": "pad_1",
             "labware": _identity().model_dump(),
         }
-        wrapped = wrap_transporter_payload("seed_position", wire)
+        wrapped = _wrap("seed_position", wire)
         request = wrapped["request"]
         assert isinstance(request, SeedPositionRequest)
         assert request.position_id == "pad_1"
@@ -76,7 +82,7 @@ class TestWireRoundTrip:
             "position_id": "pad_1",
             "labware": _identity().model_dump(),
         }
-        wrapped = wrap_transporter_payload("ensure_seeded", wire)
+        wrapped = _wrap("ensure_seeded", wire)
         request = wrapped["request"]
         assert isinstance(request, EnsureSeededRequest)
 
@@ -85,7 +91,7 @@ class TestWireRoundTrip:
             "position_id": "pad_1",
             "labware": _identity().model_dump(),
         }
-        wrapped = wrap_transporter_payload("unseed_position", wire)
+        wrapped = _wrap("unseed_position", wire)
         request = wrapped["request"]
         assert isinstance(request, UnseedPositionRequest)
 
@@ -96,7 +102,7 @@ class TestWireRoundTrip:
             "rogue": "x",
         }
         with pytest.raises(ValueError):
-            wrap_transporter_payload("seed_position", wire)
+            _wrap("seed_position", wire)
 
 
 class TestSimDriverWireSeedSemantics:
@@ -375,12 +381,12 @@ class TestResetWorld:
     their identities)."""
 
     def test_reset_world_round_trip(self) -> None:
-        wrapped = wrap_transporter_payload("reset_world", {})
+        wrapped = _wrap("reset_world", {})
         assert isinstance(wrapped["request"], ResetWorldRequest)
 
     def test_reset_world_rejects_unknown_field(self) -> None:
         with pytest.raises(ValueError):
-            wrap_transporter_payload("reset_world", {"rogue": "x"})
+            _wrap("reset_world", {"rogue": "x"})
 
     @pytest.mark.asyncio
     async def test_reset_world_wipes_every_seed_and_the_gripper(self) -> None:

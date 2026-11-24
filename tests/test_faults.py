@@ -217,6 +217,6 @@ def test_empty_subclass_does_not_shadow_parent_faultable_methods() -> None:
     waste_methods = _collect_faultable_methods(WasteSimMixin)
     # Waste inherits Storage; the union must hold.
     assert storage_methods.issubset(waste_methods)
-    # And the subclass should not have set an own _faultable_methods
+    # And the subclass should not have set an own _hooked_commands
     # attribute at all (vs. setting it to frozenset() which would shadow).
-    assert "_faultable_methods" not in WasteSimMixin.__dict__
+    assert "_hooked_commands" not in WasteSimMixin.__dict__

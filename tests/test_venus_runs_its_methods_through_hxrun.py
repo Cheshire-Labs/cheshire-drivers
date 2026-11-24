@@ -15,7 +15,7 @@ from pydantic import BaseModel, JsonValue
 
 from cheshire_drivers.driver_errors import DriverError
 from cheshire_drivers.protocol_runner_models import LabwareHandoffRequest, RunProtocolRequest
-from cheshire_drivers.protocol_runner_request_validation import wrap_protocol_runner_payload
+from cheshire_drivers.command_table import COMMANDS
 from cheshire_drivers.venus_driver import SimulationVenusProtocolDriver, VenusProtocolDriver
 
 _FAKE_HXRUN = """
@@ -168,8 +168,10 @@ async def test_a_hook_without_a_site_or_barcode_sends_empty_strings(bench: _Benc
 
 @pytest.mark.parametrize("action", ["prepare_for_place", "notify_placed", "prepare_for_pick", "notify_picked"])
 def test_a_hook_arriving_over_the_wire_becomes_a_handoff_request(action: str) -> None:
-    wrapped = wrap_protocol_runner_payload(
-        action, {"labware_name": "plate_1", "labware_type": "Cos_96_Rd", "site": "sample_site"},
+    hook = COMMANDS.find({"IProtocolRunner"}, action)
+    assert hook is not None
+    wrapped = hook.driver_kwargs(
+        {"labware_name": "plate_1", "labware_type": "Cos_96_Rd", "site": "sample_site"},
     )
 
     assert wrapped == {"request": LabwareHandoffRequest(

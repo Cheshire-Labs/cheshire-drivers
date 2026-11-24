@@ -2,24 +2,30 @@
 
 import json
 import re
+from typing import get_args
 
 import pytest
 from pydantic import ValidationError
 
+from cheshire_drivers.device_setup import DeviceSetup
 from cheshire_drivers.gateway_protocol import (
+    EffectiveMode,
     PROTOCOL_VERSION,
     CancelMessage,
     CommandMessage,
-    ConnectMessage,
+    AssignedDevice,
+    AssignmentResult,
+    ClientHello,
+    DeviceAssignment,
     DeviceConnectInfo,
     HeartbeatMessage,
-    LabwareDefinitionDTO,
     MessageEnvelope,
     ResponseMessage,
     DeviceLinkInfo,
     DeviceStatusInfo,
     StatusMessage,
 )
+from cheshire_drivers.driver_errors import InstrumentOutcome
 
 _OPEN = {"is_connected": True, "is_initialized": True}
 _SHUT = {"is_connected": False, "is_initialized": False}
@@ -36,54 +42,60 @@ def test_protocol_version_is_semver() -> None:
     assert re.fullmatch(r"\d+\.\d+\.\d+", PROTOCOL_VERSION)
 
 
-def test_connect_message_round_trips_through_envelope() -> None:
-    msg = ConnectMessage(
-        site="boston",
-        lab="molbio",
-        devices=[
-            DeviceConnectInfo(name="shaker_1", type="shaker", interfaces=frozenset({"IShaker"})),
-        ],
-    )
-    env = MessageEnvelope.wrap_connect(msg)
-    assert env.type == "connect"
+def test_a_hello_names_the_client_and_lists_no_devices() -> None:
+    env = MessageEnvelope.wrap_hello(ClientHello(client_id="lab_pc", site="boston", lab="molbio"))
+
+    assert env.type == "hello"
     unwrapped = env.unwrap()
-    assert isinstance(unwrapped, ConnectMessage)
-    assert unwrapped.devices[0].name == "shaker_1"
+    assert isinstance(unwrapped, ClientHello) and unwrapped.client_id == "lab_pc"
+    assert "devices" not in env.payload
 
 
-def test_command_message_carries_labware() -> None:
-    cmd = CommandMessage(
-        command_id="cmd_1",
-        device_name="lh_1",
-        command="pick_up_tips",
-        params={"channels": [1, 2]},
-        effective_mode="LIVE",
-        labware=LabwareDefinitionDTO(
-            labware_type="HTF_L",
-            display_name="Hamilton Filter Tips",
-            category="tip_rack",
-            vendor="Hamilton",
-            plr_class_name="HTF_L",
-            geometry={"num_rows": 8, "num_cols": 12},
-            source="plr_seed",
-        ),
-    )
-    env = MessageEnvelope.wrap_command(cmd)
-    parsed = env.unwrap()
-    assert isinstance(parsed, CommandMessage)
-    assert parsed.labware is not None
-    assert parsed.labware.plr_class_name == "HTF_L"
+def test_an_assignment_carries_its_id_and_each_devices_setup_through_the_envelope() -> None:
+    setup = DeviceSetup.model_validate({
+        "client": "lab_pc",
+        "real": {"type": "plr", "backend": "PreciseFlex", "connection": {"type": "tcp", "host": "10.0.0.5"}},
+    })
+    env = MessageEnvelope.wrap_assignment(DeviceAssignment(
+        assignment_id="a2", devices=[AssignedDevice(name="pf400_1", kind="transporter", setup=setup)],
+    ))
+
+    unwrapped = MessageEnvelope.model_validate_json(env.model_dump_json()).unwrap()
+
+    assert isinstance(unwrapped, DeviceAssignment) and unwrapped.devices[0].setup == setup
+    assert unwrapped.assignment_id == "a2"
 
 
-def test_command_message_back_compat_labware_unset() -> None:
-    cmd = CommandMessage(
-        command_id="cmd_2",
-        device_name="shaker_1",
-        command="shake",
-        params={"speed": 500.0},
-        effective_mode="LIVE",
-    )
-    assert cmd.labware is None
+def test_an_assignment_result_names_its_assignment_and_reports_what_built_and_each_failure_by_name() -> None:
+    env = MessageEnvelope.wrap_assignment_result(AssignmentResult(
+        assignment_id="a2",
+        devices=[DeviceConnectInfo(name="shaker_1", type="shaker", interfaces=frozenset({"IShaker"}))],
+        errors={"pf400_1": "no route to host"},
+    ))
+
+    unwrapped = env.unwrap()
+
+    assert isinstance(unwrapped, AssignmentResult)
+    assert [device.name for device in unwrapped.devices] == ["shaker_1"]
+    assert unwrapped.errors == {"pf400_1": "no route to host"}
+    assert unwrapped.assignment_id == "a2"
+    assert unwrapped.error is None
+
+
+def test_an_assignment_result_carries_why_the_whole_assignment_failed() -> None:
+    env = MessageEnvelope.wrap_assignment_result(AssignmentResult(assignment_id="a2", devices=[], error="out of memory"))
+
+    unwrapped = MessageEnvelope.model_validate_json(env.model_dump_json()).unwrap()
+
+    assert isinstance(unwrapped, AssignmentResult) and unwrapped.error == "out of memory"
+
+
+def test_a_command_message_carries_no_labware_row() -> None:
+    with pytest.raises(ValidationError):
+        CommandMessage.model_validate({
+            "command_id": "cmd_1", "device_name": "lh_1", "command": "pick_up_tips",
+            "params": {}, "effective_mode": "LIVE", "labware": None,
+        })
 
 
 def test_cancel_message_round_trips_and_is_in_discriminator() -> None:
@@ -129,12 +141,12 @@ def test_response_status_heartbeat_round_trip() -> None:
 
 
 def test_effective_mode_still_carries_the_mode_no_driver_answers_for() -> None:
-    """PURE_SIM is a valid dispatch mode and an invalid link key. Deriving one
+    """CHECK_RUN is a valid dispatch mode and an invalid link key. Deriving one
     vocabulary from the other must not collapse that distinction."""
     cmd = CommandMessage(
-        command_id="cmd_1", device_name="d", command="shake", effective_mode="PURE_SIM",
+        command_id="cmd_1", device_name="d", command="shake", effective_mode="CHECK_RUN",
     )
-    assert cmd.effective_mode == "PURE_SIM"
+    assert cmd.effective_mode == "CHECK_RUN"
 
 
 def test_effective_mode_rejects_unknown_value() -> None:
@@ -158,20 +170,15 @@ def test_envelope_unwrap_rejects_unknown_type() -> None:
         env.unwrap()
 
 
-def test_wrapped_connect_payload_is_json_serializable() -> None:
-    msg = ConnectMessage(
-        site="boston",
-        lab="molbio",
-        devices=[
-            DeviceConnectInfo(
-                name="shaker_1",
-                type="shaker",
-                interfaces=frozenset({"IShaker"}),
-                capabilities=frozenset({"set_temperature"}),
-            ),
-        ],
-    )
-    env = MessageEnvelope.wrap_connect(msg)
+def test_wrapped_assignment_result_payload_is_json_serializable() -> None:
+    env = MessageEnvelope.wrap_assignment_result(AssignmentResult(assignment_id="a1", devices=[
+        DeviceConnectInfo(
+            name="shaker_1",
+            type="shaker",
+            interfaces=frozenset({"IShaker"}),
+            capabilities=frozenset({"set_temperature"}),
+        ),
+    ]))
 
     # The full envelope must be directly json.dumps-able with no custom encoder.
     json.dumps(env.model_dump(mode="json"))
@@ -184,10 +191,10 @@ def test_wrapped_connect_payload_is_json_serializable() -> None:
     assert sorted(device["capabilities"]) == ["set_temperature"]
 
 
-def test_connect_message_rejects_unknown_protocol_version() -> None:
-    bad = {"protocol_version": "9.9.9", "site": "boston", "lab": "molbio", "devices": []}
+def test_a_hello_with_another_protocol_version_is_refused() -> None:
+    bad = {"protocol_version": "9.9.9", "client_id": "lab_pc", "site": "boston", "lab": "molbio"}
     with pytest.raises(ValidationError):
-        ConnectMessage.model_validate(bad)
+        ClientHello.model_validate(bad)
 
 
 def test_status_carries_each_device_link_state() -> None:
@@ -224,7 +231,7 @@ def test_status_keeps_each_run_modes_link_separate() -> None:
                     "status": "ready",
                     "links": {
                         "LIVE": {"is_connected": False, "is_initialized": False},
-                        "DEVICE_SIM": {"is_connected": True, "is_initialized": True},
+                        "SIM": {"is_connected": True, "is_initialized": True},
                     },
                 },
             },
@@ -232,7 +239,7 @@ def test_status_keeps_each_run_modes_link_separate() -> None:
         }
     )
     links = msg.devices["flex_1"].links
-    assert links["DEVICE_SIM"].is_connected is True
+    assert links["SIM"].is_connected is True
     assert links["LIVE"].is_connected is False
 
 
@@ -244,7 +251,7 @@ def test_status_reports_no_link_for_a_mode_the_agent_holds_no_driver_for() -> No
             "devices": {
                 "flex_1": {
                     "status": "ready",
-                    "links": {"DEVICE_SIM": {"is_connected": True, "is_initialized": True}},
+                    "links": {"SIM": {"is_connected": True, "is_initialized": True}},
                 },
             },
             "timestamp": 1.0,
@@ -270,14 +277,14 @@ def test_status_rejects_a_status_word_the_dispatch_lock_cannot_produce() -> None
 
 
 def test_status_rejects_a_link_keyed_by_a_mode_that_never_reaches_the_agent() -> None:
-    """PURE_SIM runs server-side, so no agent driver can answer for it."""
+    """CHECK_RUN runs server-side, so no agent driver can answer for it."""
     with pytest.raises(ValidationError):
         StatusMessage.model_validate(
             {
                 "devices": {
                     "pf400_1": {
                         "status": "ready",
-                        "links": {"PURE_SIM": {"is_connected": True, "is_initialized": True}},
+                        "links": {"CHECK_RUN": {"is_connected": True, "is_initialized": True}},
                     },
                 },
                 "timestamp": 1.0,
@@ -288,23 +295,23 @@ def test_status_rejects_a_link_keyed_by_a_mode_that_never_reaches_the_agent() ->
 def test_the_observed_link_prefers_the_instrument_when_both_are_open() -> None:
     """A reader that is not dispatching gets the instrument's answer, not a
     simulator's, whenever the instrument has one."""
-    observed = _reported({"LIVE": _OPEN, "DEVICE_SIM": _OPEN}).observed_link
+    observed = _reported({"LIVE": _OPEN, "SIM": _OPEN}).observed_link
     assert observed.mode == "LIVE"
     assert observed.is_connected is True
 
 
 def test_the_observed_link_names_the_simulator_when_only_it_is_open() -> None:
-    """A DEVICE_SIM bench answers every command, so it must not read as offline,
+    """A SIM bench answers every command, so it must not read as offline,
     and the mode has to travel with the flag or the operator reads a simulator
     as the instrument."""
-    observed = _reported({"LIVE": _SHUT, "DEVICE_SIM": _OPEN}).observed_link
-    assert observed.mode == "DEVICE_SIM"
+    observed = _reported({"LIVE": _SHUT, "SIM": _OPEN}).observed_link
+    assert observed.mode == "SIM"
     assert observed.is_connected is True
 
 
 def test_the_observed_link_reports_the_instrument_closed_when_nothing_is_open() -> None:
     """Nothing is up, so the answer is the one that matters to an operator."""
-    observed = _reported({"LIVE": _SHUT, "DEVICE_SIM": _SHUT}).observed_link
+    observed = _reported({"LIVE": _SHUT, "SIM": _SHUT}).observed_link
     assert observed.mode == "LIVE"
     assert observed.is_connected is False
 
@@ -312,8 +319,8 @@ def test_the_observed_link_reports_the_instrument_closed_when_nothing_is_open() 
 def test_the_observed_link_answers_for_a_device_with_only_a_simulator() -> None:
     """An Opentrons LH whose live robot the agent never builds still has to
     answer a registry read rather than blow up on a missing LIVE key."""
-    observed = _reported({"DEVICE_SIM": _OPEN}).observed_link
-    assert observed.mode == "DEVICE_SIM"
+    observed = _reported({"SIM": _OPEN}).observed_link
+    assert observed.mode == "SIM"
     assert observed.is_connected is True
 
 
@@ -331,9 +338,9 @@ def test_the_observed_link_answers_with_the_flags_of_the_mode_it_picked() -> Non
     flags there reports a device as never initialized while the map says
     otherwise, and an operator who re-runs initialize sees nothing move."""
     observed = _reported(
-        {"LIVE": _SHUT, "DEVICE_SIM": {"is_connected": False, "is_initialized": True}}
+        {"LIVE": _SHUT, "SIM": {"is_connected": False, "is_initialized": True}}
     ).observed_link
-    assert observed.mode == "DEVICE_SIM"
+    assert observed.mode == "SIM"
     assert observed.is_connected is False
     assert observed.is_initialized is True
 
@@ -356,9 +363,49 @@ def test_the_observed_link_takes_an_open_link_over_a_merely_brought_up_one() -> 
     observed = _reported(
         {
             "LIVE": {"is_connected": False, "is_initialized": True},
-            "DEVICE_SIM": {"is_connected": True, "is_initialized": False},
+            "SIM": {"is_connected": True, "is_initialized": False},
         }
     ).observed_link
-    assert observed.mode == "DEVICE_SIM"
+    assert observed.mode == "SIM"
     assert observed.is_connected is True
     assert observed.is_initialized is False
+
+
+@pytest.mark.parametrize("retired", ["pose", "driver_event"])
+def test_a_retired_frame_is_refused(retired: str) -> None:
+    with pytest.raises(ValidationError):
+        MessageEnvelope.model_validate({"type": retired, "payload": {}})
+
+
+def test_a_response_carrying_calculated_sim_seconds_is_refused() -> None:
+    with pytest.raises(ValidationError, match="calculated_sim_seconds"):
+        ResponseMessage.model_validate({"command_id": "c", "success": True, "calculated_sim_seconds": 2.0})
+
+
+def test_a_command_carries_the_runs_speedup_and_defaults_to_none() -> None:
+    base = {"command_id": "c", "device_name": "pf400_1", "command": "home", "effective_mode": "SIM"}
+
+    assert CommandMessage.model_validate(base).sim_speedup is None
+    scaled = MessageEnvelope.wrap_command(CommandMessage.model_validate(base | {"sim_speedup": 10.0}))
+    unwrapped = MessageEnvelope.model_validate_json(scaled.model_dump_json()).unwrap()
+    assert isinstance(unwrapped, CommandMessage) and unwrapped.sim_speedup == 10.0
+
+
+def test_a_command_carries_its_budget_in_simulated_seconds_and_defaults_to_none() -> None:
+    base = {"command_id": "c", "device_name": "pf400_1", "command": "pick_at_coords", "effective_mode": "SIM"}
+
+    assert CommandMessage.model_validate(base).nominal_seconds is None
+    budgeted = MessageEnvelope.wrap_command(CommandMessage.model_validate(base | {"nominal_seconds": 5.0}))
+    unwrapped = MessageEnvelope.model_validate_json(budgeted.model_dump_json()).unwrap()
+    assert isinstance(unwrapped, CommandMessage) and unwrapped.nominal_seconds == 5.0
+    with pytest.raises(ValidationError):
+        CommandMessage.model_validate(base | {"nominal_seconds": -1.0})
+
+
+def test_the_dispatch_modes_are_listed_in_one_order() -> None:
+    assert get_args(EffectiveMode) == ("CHECK_RUN", "SIM", "LIVE")
+
+
+def test_the_protocol_version_is_pinned() -> None:
+    """Both ends close 1002 on a version mismatch, so a wire change ships as a new version: change it here too."""
+    assert PROTOCOL_VERSION == "1.8.0"

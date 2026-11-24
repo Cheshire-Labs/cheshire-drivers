@@ -101,6 +101,10 @@ class TipRackSeedEntry(BaseModel):
     size_y: float
     size_z: float
     tip_spots: list[TipSpotSeedEntry]
+    tip_top_z: float | None = None
+    """Where the robot puts a seated tip's top above the rack's base, when it reads its own definition of the rack
+    rather than PLR's geometry (a Flex loading the rack by its Opentrons name). None: a tip's top is its spot's
+    z plus the tip's length, as PLR places it."""
 
 
 class TroughSeedEntry(BaseModel):

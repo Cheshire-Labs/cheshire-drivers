@@ -193,3 +193,49 @@ imprecise for everything; one that suits a flat plate grips a deep well by the
 top of its wells. None hands the decision to the robot's own definition, and a
 grip profile is where the measured answer goes.
 """
+
+
+DEFAULT_JAW_OPENING_MM = 14.0
+"""How far an open with no opening named stands off the grip position.
+
+Only for a caller with no move in hand, such as an operator pressing a button. A
+pick opens by the opening its own resolved move carries."""
+
+
+def grip_z(taught_z: float, params: MoveParameters) -> float:
+    """A taught height raised to where this labware is actually gripped.
+
+    A teachpoint is taught holding one labware; a taller or shorter one sits at a
+    different height in the same nest. The offset is zero when the labware being
+    moved is the one the position was taught on.
+    """
+    return taught_z + params.z_offset
+
+
+def out_of_the_nest(handling: MoveParameters) -> float:
+    """How far a leg with the labware IN the jaws travels off the grip point.
+
+    What it has to clear is the site: the lip of the pad or the wall of the pocket
+    the labware sits in. `grasp_offset` is how deep that is, and the labware's own
+    height has no part in it, because the labware is held above the lip either way.
+    The same pad has the same lip whether a tip box or a microplate is on it.
+
+    A pick rises by this carrying the labware out; a place descends from it
+    carrying the labware in.
+    """
+    return handling.grasp_offset + handling.travel_margin
+
+
+def over_the_labware(handling: MoveParameters) -> float:
+    """How far a leg with EMPTY jaws travels off the grip point.
+
+    What it has to clear is the labware standing at the site, because empty jaws
+    are down at the grip point beside it and the next thing they do is travel
+    sideways. That is true arriving to pick one up and true leaving after setting
+    one down: the obstacle is the same object either way, and it is the same height
+    whether the arm is about to grip it or has just let go of it.
+
+    Leaving after a place by the nest's depth instead is how the arm clears the pad
+    and then drives through the box it just put on it.
+    """
+    return handling.resource_height + handling.travel_margin

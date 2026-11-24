@@ -13,6 +13,8 @@ from typing import Iterator, Tuple, get_args
 
 import pytest
 
+from cheshire_drivers.driver_errors import InstrumentOutcome, outcome_of
+
 from cheshire_drivers.liquid_handler_models import (
     DeckLayoutConfig,
     DeckResourceConfig,
@@ -290,10 +292,13 @@ class TestInitializeRefusesAStrandedTip:
         await driver.configure_deck(_FLEX_LAYOUT)
         transport.set_tip_detected("left", True)
 
-        with pytest.raises(RuntimeError, match="discard_stranded_tips"):
+        with pytest.raises(RuntimeError, match="discard_stranded_tips") as refused:
             await driver.initialize()
 
         assert not driver.is_initialized
+        assert outcome_of(refused.value) is InstrumentOutcome.REJECTED, (
+            "only the tip sensor was read; nothing on the deck moved"
+        )
 
     @pytest.mark.asyncio
     async def test_discarding_the_stranded_tip_lets_bring_up_finish(self) -> None:
@@ -377,8 +382,10 @@ class TestOtherDriverFamilies:
     async def test_a_sensorless_wrapper_refuses_the_stranded_tip_escape(self) -> None:
         driver = ChatterboxLiquidHandlerDriver()
 
-        with pytest.raises(RuntimeError, match="no tip-presence sensor"):
+        with pytest.raises(RuntimeError, match="no tip-presence sensor") as refused:
             await driver.discard_stranded_tips(DiscardStrandedTipsRequest())
+
+        assert outcome_of(refused.value) is InstrumentOutcome.REJECTED
 
     @pytest.mark.asyncio
     async def test_a_sim_driver_reports_checked_and_in_sync(self) -> None:

@@ -1,9 +1,9 @@
-"""Manage a simulated Opentrons robot-server subprocess for DEVICE_SIM.
+"""Manage a simulated Opentrons robot-server subprocess for SIM.
 
 The Opentrons robot-server IS the device's own simulator: it serves the same HTTP
 API as real hardware and runs the same motion planning, driven by the same
 ``FlexLiquidHandlerDriver``, but over a virtual smoothie instead of real motors.
-DEVICE_SIM boots one per Opentrons liquid handler and stops it with the device, so
+SIM boots one per Opentrons liquid handler and stops it with the device, so
 an operator never starts or stops a server by hand.
 
 The launch spec (which interpreter/cwd runs the server, which instrument config it
@@ -47,7 +47,7 @@ _BOOTSTRAP = (
 
 
 class OpentronsSimServer:
-    """A robot-server subprocess bound to one liquid handler's DEVICE_SIM lifecycle."""
+    """A robot-server subprocess bound to one liquid handler's SIM lifecycle."""
 
     def __init__(self, spec: OpentronsSimServerSpec, *, host: str = "127.0.0.1", port: int) -> None:
         self._spec = spec

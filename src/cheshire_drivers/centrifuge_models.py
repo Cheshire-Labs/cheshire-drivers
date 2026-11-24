@@ -12,7 +12,5 @@ from cheshire_drivers.liquid_handler_models import _StrictModel
 
 
 class CentrifugeRequest(_StrictModel):
-    # ge=0 preserves the older lax contract; physical caps belong in the
-    # REST/MCP layer or the driver implementation, not the wire model.
-    g: float = Field(..., ge=0, description="Centrifugal force in units of g (gravity)")
-    duration: float = Field(..., ge=0, description="Duration in seconds")
+    g: float = Field(..., gt=0, le=5000, description="Centrifugal force in units of g (gravity)")
+    duration: float = Field(..., gt=0, description="Duration in seconds")

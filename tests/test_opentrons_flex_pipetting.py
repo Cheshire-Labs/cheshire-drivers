@@ -1141,7 +1141,9 @@ class TestTips:
 
         # The head confirms the tips actually left, and it asks with a run command: reading the
         # sensor over GET /instruments re-caches the pipettes and wipes the run's attached tip.
+        # The lift comes first, as before any move.
         assert _types(transport.commands[before:]) == [
+            "retractAxis",
             "moveToAddressableAreaForDropTip",
             "dropTipInPlace",
             "getTipPresence",
@@ -1161,7 +1163,7 @@ class TestTips:
         await driver.discard_tips(DiscardTipsRequest())
 
         new = transport.commands[before:]
-        assert _types(new)[:2] == ["moveToAddressableAreaForDropTip", "dropTipInPlace"]
+        assert _types(new)[:3] == ["retractAxis", "moveToAddressableAreaForDropTip", "dropTipInPlace"]
         assert _of_type(new, "configureNozzleLayout")[0]["params"]["configurationParams"] == {
             "style": "ALL"
         }
@@ -1252,7 +1254,8 @@ class TestTips:
 
         await driver.discard_tips(DiscardTipsRequest(use_channels=list(range(8))))
 
-        assert _types(transport.commands[before:])[:2] == [
+        assert _types(transport.commands[before:])[:3] == [
+            "retractAxis",
             "moveToAddressableAreaForDropTip",
             "dropTipInPlace",
         ]

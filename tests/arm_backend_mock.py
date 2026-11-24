@@ -16,10 +16,11 @@ from pylabrobot.brooks.precise_flex import (
     PreciseFlexCartesianPose,
     WorkEnvelope,
 )
+from pylabrobot.brooks.precise_flex.kinematics import ARM_LINKS_STANDARD, PF400Params
 from pylabrobot.resources.coordinate import Coordinate
 from pylabrobot.resources.rotation import Rotation
 
-# Joint tuple order used by initial_joints and the crossover constants:
+# Joint tuple order used by initial_joints:
 # [rail, base, shoulder, elbow, wrist, gripper].
 _JOINT_ORDER = (
     Axis.RAIL,
@@ -34,10 +35,13 @@ _CallArg = Union[Coordinate, Dict[int, float], int, float, str, None, tuple[int,
 
 
 class _Configuration:
-    """Just enough of the arm's resolved configuration for the pre-flight reach check."""
+    """Just enough of the arm's resolved configuration: the reach check's envelope and the link lengths it read."""
 
     def __init__(self, work_envelope: WorkEnvelope) -> None:
         self.work_envelope = work_envelope
+        self.kinematics = PF400Params(l1=ARM_LINKS_STANDARD[0], l2=ARM_LINKS_STANDARD[1])
+        self.kinematics_source = "device"
+        self.hard_limits: dict[int, tuple[float, float]] = {Axis.BASE: (work_envelope.zmin, work_envelope.zmax)}
 
 
 class RecordingArmBackend:
@@ -73,6 +77,7 @@ class RecordingArmBackend:
         self._joints: List[float] = (
             list(initial_joints) if initial_joints is not None else [0.0, 170.0, 0.0, 150.0, 0.0, 75.0]
         )
+        self._configuration = _Configuration(self.WORK_ENVELOPE)
         self.calls: List[tuple[str, tuple[_CallArg, ...]]] = []
         self.grip_widths: List[tuple[str, Optional[float]]] = []
         self.speeds: List[Optional[float]] = []
@@ -155,7 +160,7 @@ class RecordingArmBackend:
     def configuration(self) -> _Configuration:
         if self.discovery_fails:
             raise RuntimeError("Configuration is not available until setup() has run.")
-        return _Configuration(self.WORK_ENVELOPE)
+        return self._configuration
 
     @property
     def gripper_joint_range(self) -> tuple[Optional[float], Optional[float]]:

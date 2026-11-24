@@ -17,7 +17,7 @@ the same capability.
 from math import isclose
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 from typing_extensions import Self
 
 from cheshire_drivers.layered_parameters import merge_patch_over
@@ -171,6 +171,42 @@ class DispenseTarget(_StrictModel):
         return self
 
 
+def _as_flow_rate(value: JsonValue) -> float:
+    """A scalar `flow_rate`, read as leniently as the `flow_rates` list it expands into. A bool is refused."""
+    if isinstance(value, bool):
+        raise ValueError("flow_rate must be a number, got bool.")
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError as exc:
+            raise ValueError(f"flow_rate must be a number, got {value!r}.") from exc
+    raise ValueError(f"flow_rate must be a number, got {type(value).__name__}.")
+
+
+def _spread_flow_rate(data: JsonValue, targets_field: str, model_name: str) -> JsonValue:
+    """Expand a scalar `flow_rate` to one `flow_rates` entry per channel, counting each target's volumes."""
+    if not isinstance(data, dict) or "flow_rate" not in data:
+        return data
+    if "flow_rates" in data:
+        raise ValueError(f"Conflicting flow_rate (scalar) and flow_rates (list) on {model_name}. Send one or the other.")
+    expanded = dict(data)
+    flow_rate = _as_flow_rate(expanded.pop("flow_rate"))
+    targets = expanded.get(targets_field, [])
+    if not isinstance(targets, list):
+        raise ValueError(f"{targets_field} must be a list of targets for flow_rate to spread across, got {type(targets).__name__}.")
+    channels = sum(
+        len(volumes)
+        for target in targets if isinstance(target, dict)
+        for volumes in [target.get("volumes", [])] if isinstance(volumes, list)
+    )
+    if channels:
+        rates: list[JsonValue] = [flow_rate] * channels
+        expanded["flow_rates"] = rates
+    return expanded
+
+
 # --- 8-channel request models ---
 
 class AspirateRequest(_StrictModel):
@@ -197,6 +233,11 @@ class AspirateRequest(_StrictModel):
     volume-driven blow-out for no volume. ``flow_rates`` and ``offsets_z`` above
     still override this per channel, which is the one place a driver picks
     between two sources."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _spread_scalar_flow_rate(cls, data: JsonValue) -> JsonValue:
+        return _spread_flow_rate(data, "aspirations", "AspirateRequest")
 
     @model_validator(mode="after")
     def _check_per_channel_lengths(self) -> Self:
@@ -225,6 +266,11 @@ class DispenseRequest(_StrictModel):
     parameters: PipettingParameters = PipettingParameters()
     """What this dispense runs under, already resolved. See
     `AspirateRequest.parameters`."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _spread_scalar_flow_rate(cls, data: JsonValue) -> JsonValue:
+        return _spread_flow_rate(data, "dispenses", "DispenseRequest")
 
     @model_validator(mode="after")
     def _check_per_channel_lengths(self) -> Self:
@@ -260,7 +306,7 @@ class DropTipsRequest(_StrictModel):
     (``to_waste=False`` with ``drops`` populated). Like ``PickUpTipsRequest``,
     ``drops`` carries a slice per rack so a single physical drop can return
     tips to multiple racks."""
-    drops: list[TipPick] | None = None
+    drops: list[TipPick] | None = Field(None, min_length=1)
     to_waste: bool = True
     use_channels: list[int] | None = None
     """The channels to empty, for a robot whose mounts a rack slice alone cannot tell apart."""
@@ -274,8 +320,14 @@ class DropTipsRequest(_StrictModel):
         return self
 
 
+DEFAULT_GRIP_LABWARE = "default_grip_labware"
+"""The default stand-in's name on the driver's deck while it is carried, when `MovePlateRequest.plate` is None."""
+
+
 class MovePlateRequest(_StrictModel):
-    plate: str
+    plate: str | None = None
+    """The plate to carry. None means no plate is on record at `from_position`: the gripper moves as if it
+    carried the driver's default labware, which is its default grip, so it needs `from_position`."""
     to_position: str
     from_position: str | None = None
     grip_distance_from_top: float | None = None
@@ -285,6 +337,12 @@ class MovePlateRequest(_StrictModel):
     labware synthesized from PLR geometry. It is a property of this move, not of
     the labware. On an Opentrons robot it only shapes a synthesized definition's
     first upload in a run; later moves of that labware in the run reuse it."""
+
+    @model_validator(mode="after")
+    def _a_move_with_no_plate_names_where_it_starts(self) -> Self:
+        if self.plate is None and self.from_position is None:
+            raise ValueError("move_plate with no plate on record needs from_position: there is nothing to find.")
+        return self
 
 
 class AddDeckLabwareRequest(_StrictModel):
@@ -410,16 +468,16 @@ class LiquidProbeResponse(_StrictModel):
 
 class Aspirate96Request(_StrictModel):
     labware: str
-    volume: float
-    flow_rate: float | None = None
-    liquid_height: float | None = None
+    volume: float = Field(..., gt=0)
+    flow_rate: float | None = Field(None, gt=0)
+    liquid_height: float | None = Field(None, ge=0)
 
 
 class Dispense96Request(_StrictModel):
     labware: str
-    volume: float
-    flow_rate: float | None = None
-    liquid_height: float | None = None
+    volume: float = Field(..., gt=0)
+    flow_rate: float | None = Field(None, gt=0)
+    liquid_height: float | None = Field(None, ge=0)
 
 
 class PickUpTips96Request(_StrictModel):
@@ -427,7 +485,7 @@ class PickUpTips96Request(_StrictModel):
 
 
 class DropTips96Request(_StrictModel):
-    tip_rack: str | None = None
+    tip_rack: str | None = Field(None, max_length=100)
     to_waste: bool = True
 
 
@@ -493,11 +551,14 @@ class InterruptedMove(_StrictModel):
     While this is set, the ``site`` reported for ``labware`` is where the move
     BEGAN, not where the labware is. Treat its location as unknown until
     someone looks.
+
+    ``labware`` is None when nothing on record was being moved: the gripper was
+    sent to a site with no plate on record, and what it gripped there is unknown.
     """
 
-    labware: str
     to_site: str
     error: str
+    labware: str | None = None
     from_site: str | None = None
 
 

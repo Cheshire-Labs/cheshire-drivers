@@ -16,7 +16,7 @@ from cheshire_drivers.driver_introspection import (
 )
 from cheshire_drivers.homing_models import HomeRequest
 from cheshire_drivers.interfaces import IHomeableDriver, ITransporterDriver
-from cheshire_drivers.lh_request_validation import LH_REQUEST_MODELS
+from cheshire_drivers.command_table import COMMANDS
 from cheshire_drivers.plr.opentrons_flex import FlexLiquidHandlerDriver
 from cheshire_drivers.sims import SimLiquidHandlerDriver, SimTransporterDriver
 
@@ -40,9 +40,9 @@ class TestTheCapabilityIsDeclared:
         assert "home" not in derive_capabilities(FlexLiquidHandlerDriver)
 
     def test_the_wire_knows_what_shape_a_home_takes(self) -> None:
-        """The gateway validates and orca-client wraps from this one map, so a liquid
-        handler's home crosses the wire only if it is registered here."""
-        assert LH_REQUEST_MODELS["home"] == ("request", HomeRequest)
+        home = COMMANDS.find({"ILiquidHandler", "IHomeable"}, "home")
+        assert home is not None
+        assert (home.request_param, home.request_model) == ("request", HomeRequest)
 
 
 class TestSimParity:

@@ -72,8 +72,8 @@ async def _fail_a_gripper_move(driver: FlexLiquidHandlerDriver) -> None:
 class TestAStalledMoveStopsTheNextTravel:
     async def test_park_refuses_after_a_gripper_move_died_part_way(self) -> None:
         driver = await _bench_with_gripper()
-        retracted = _record_retractions(driver)
         await _fail_a_gripper_move(driver)
+        retracted = _record_retractions(driver)
 
         with pytest.raises(GantryBusyError) as raised:
             await driver.park_gantry(ParkGantryRequest())
@@ -83,8 +83,8 @@ class TestAStalledMoveStopsTheNextTravel:
 
     async def test_a_gripper_jog_refuses_on_the_same_grounds(self) -> None:
         driver = await _bench_with_gripper()
-        retracted = _record_retractions(driver)
         await _fail_a_gripper_move(driver)
+        retracted = _record_retractions(driver)
 
         with pytest.raises(GantryBusyError):
             await driver.move_gripper_to(

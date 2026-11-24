@@ -4,7 +4,7 @@ one if they ever have to.
 The first cut of these carried neither `ot_load_name` nor
 `material_z_thickness`, so a Flex could not load them at all: with no load
 name the driver builds a definition from geometry, and that build refuses a
-container whose cavity floor height is undeclared. PURE_SIM never builds one,
+container whose cavity floor height is undeclared. CHECK_RUN never builds one,
 which is why it looked fine.
 """
 

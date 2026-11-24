@@ -191,8 +191,8 @@ class VenusProtocolDriver(IProtocolRunnerDriver):
         # The Orca library reads these with GetConfigProperty_String, so a missing value is "", never null.
         await self._run_method(method, {
             "action": action,
-            "labware_name": request.labware_name,
-            "labware_type": request.labware_type,
+            "labware_name": request.labware_name or "",
+            "labware_type": request.labware_type or "",
             "site": request.site or "",
             "barcode": request.barcode or "",
         })

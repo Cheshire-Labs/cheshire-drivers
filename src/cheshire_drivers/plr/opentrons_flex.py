@@ -14,6 +14,7 @@ positions than the head has nozzles -- is refused with a message naming what the
 mounted head can do, rather than emulated as something the caller did not ask for.
 """
 
+import logging
 from contextlib import contextmanager
 from math import isclose
 from typing import Awaitable, Callable, ClassVar, Iterator, Literal, NamedTuple, TypeAlias
@@ -46,8 +47,13 @@ from pylabrobot.resources.well import Well as PLRWell
 from pylabrobot.visualizer import Visualizer
 
 from cheshire_drivers.command_timings import command_timing
+from cheshire_drivers.driver_errors import (
+    CheckedBeforeAskingError, DriverRejectedError, asks_the_instrument_nothing, before_the_instrument_is_asked,
+)
 from cheshire_drivers.driver_introspection import VendorSurface, external
 from cheshire_drivers.gantry_models import GantryBusyError, ParkGantryRequest
+from cheshire_drivers.head_retract import FirstMoveGate, RetractsHeadsBeforeTravel, every_command_of
+from cheshire_drivers.plr.lift_before_first_move import LiftBeforeFirstMove
 from cheshire_drivers.interrupted_move import InterruptedMoveTracking
 from cheshire_drivers.gripper_models import (
     GripWithForceRequest,
@@ -64,6 +70,7 @@ from cheshire_drivers.interfaces import (
     ILiquidProbeDriver,
     IPipetteMotionDriver,
 )
+from cheshire_drivers.default_grip import GripsAStandIn, default_grip_labware
 from cheshire_drivers.liquid_handler_models import (
     AddDeckLabwareRequest,
     Aspirate96Request,
@@ -129,6 +136,9 @@ from cheshire_drivers.plr_wrappers import (
     start_deck_visualizer,
 )
 from cheshire_drivers.wire_timeouts import WireTimeout, resolve_wire_timeout
+
+
+logger = logging.getLogger(__name__)
 
 FLEX_DECK_TYPE = "FlexDeck"
 
@@ -267,6 +277,7 @@ def _slot_occupants(deck: FlexDeck) -> list[tuple[str, PLRResource]]:
     return [(slot, occupant) for slot, occupant in deck.slots.items() if occupant is not None]
 
 
+@asks_the_instrument_nothing
 def _require_slot(site: str, field: str) -> str:
     """The deck slot a '<slot>-slot' site label names."""
     slot = slot_key_from_site(site)
@@ -311,6 +322,7 @@ class _LiquidSeam(NamedTuple):
     dispense: _LiquidCall
 
 
+@asks_the_instrument_nothing
 def _row_and_column(resource: PLRItemized, labware: str, position: str) -> tuple[int, int]:
     """A well id ("C5") as its zero-based (row, column) in this labware's own grid."""
     row = ord(position[:1].upper()) - ord("A")
@@ -319,6 +331,7 @@ def _row_and_column(resource: PLRItemized, labware: str, position: str) -> tuple
     return row, int(position[1:]) - 1
 
 
+@asks_the_instrument_nothing
 def _require_well_ids(resource: PLRResource, labware: str, positions: list[str]) -> None:
     """Refuse positions this labware has no such well for, before any wire command.
 
@@ -338,6 +351,7 @@ def _require_well_ids(resource: PLRResource, labware: str, positions: list[str])
             ) from None
 
 
+@asks_the_instrument_nothing
 def _nozzle_row_stride(resource: PLRItemized, labware: str) -> int:
     """How many rows apart the 8 nozzles land on this labware.
 
@@ -352,6 +366,7 @@ def _nozzle_row_stride(resource: PLRItemized, labware: str) -> int:
     return stride
 
 
+@asks_the_instrument_nothing
 def _full_column(resource: PLRItemized, labware: str, positions: list[str]) -> int:
     """The zero-based column index the head's 8 nozzles cover.
 
@@ -375,6 +390,7 @@ def _full_column(resource: PLRItemized, labware: str, positions: list[str]) -> i
     return columns.pop() * stride + phase
 
 
+@asks_the_instrument_nothing
 def _one_value(values: list[float], what: str, labware: str) -> float:
     """The single value a ganged head can honor, or a refusal naming the spread."""
     first = values[0]
@@ -462,6 +478,7 @@ def _describe_heads(flex: OpentronsFlex) -> str:
     )
 
 
+@asks_the_instrument_nothing
 def _head_owning_channels(
     flex: OpentronsFlex, use_channels: list[int], operation: str
 ) -> tuple[int, _MountHead]:
@@ -482,6 +499,7 @@ def _head_owning_channels(
     )
 
 
+@asks_the_instrument_nothing
 def _head_for_count(flex: OpentronsFlex, count: int, operation: str) -> tuple[int, _MountHead]:
     """The one mount head that serves this many positions at once."""
     mounts = _mount_heads(flex)
@@ -504,6 +522,7 @@ def _head_for_count(flex: OpentronsFlex, count: int, operation: str) -> tuple[in
     )
 
 
+@asks_the_instrument_nothing
 def _require_channel_list(use_channels: list[int], count: int, operation: str) -> None:
     """Refuse a channel list that cannot name one channel per position."""
     if len(use_channels) != count:
@@ -515,6 +534,7 @@ def _require_channel_list(use_channels: list[int], count: int, operation: str) -
         raise ValueError(f"{operation}: use_channels repeats a channel: {use_channels}.")
 
 
+@asks_the_instrument_nothing
 def _require_shape_fits_head(
     head: _MountHead, labware: str, positions: list[str] | None, count: int, operation: str
 ) -> None:
@@ -532,6 +552,7 @@ def _require_shape_fits_head(
         )
 
 
+@asks_the_instrument_nothing
 def _require_cherry_pick_channel(
     base: int,
     head: _MountHead,
@@ -573,6 +594,7 @@ def _cherry_pick_nozzle(
     return _CHERRY_PICK_NOZZLES[use_channels[0] - base]
 
 
+@asks_the_instrument_nothing
 def _resolve_head(
     flex: OpentronsFlex,
     labware: str,
@@ -600,6 +622,7 @@ def _resolve_head(
     return head
 
 
+@asks_the_instrument_nothing
 def _require_plate(resource: PLRResource, labware: str) -> PLRPlate:
     """The itemized plate a positioned op addresses."""
     if not isinstance(resource, PLRPlate):
@@ -610,6 +633,7 @@ def _require_plate(resource: PLRResource, labware: str) -> PLRPlate:
     return resource
 
 
+@asks_the_instrument_nothing
 def _require_container(resource: PLRResource, labware: str) -> PLRContainer:
     """The single-cavity container a position-less op addresses."""
     if not is_standalone_container(resource):
@@ -620,6 +644,7 @@ def _require_container(resource: PLRResource, labware: str) -> PLRContainer:
     return resource
 
 
+@asks_the_instrument_nothing
 def _require_tip_rack(flex: OpentronsFlex, name: str) -> PLRTipRack:
     """The tip rack a tip op names."""
     resource = flex.deck.get_resource(name)
@@ -640,6 +665,7 @@ def _cherry_pick_seam(head: FlexHead8, plate: PLRPlate, well_id: str) -> _Liquid
     return _LiquidSeam(head, aspirate, dispense)
 
 
+@asks_the_instrument_nothing
 def _liquid_seam(
     flex: OpentronsFlex, head: _MountHead, labware: str, positions: list[str] | None
 ) -> _LiquidSeam:
@@ -714,6 +740,7 @@ class _Probe(NamedTuple):
     well: str
 
 
+@asks_the_instrument_nothing
 def _probe_call(
     flex: OpentronsFlex, head: _MountHead, labware: str, positions: list[str] | None
 ) -> _Probe:
@@ -772,6 +799,7 @@ async def _run_mix_cycles(
         await seam.dispense(volume, flow_rate, height)
 
 
+@asks_the_instrument_nothing
 def _only_slice(
     slices: list[AspirateTarget] | list[DispenseTarget], operation: str
 ) -> AspirateTarget | DispenseTarget:
@@ -784,6 +812,7 @@ def _only_slice(
     return slices[0]
 
 
+@asks_the_instrument_nothing
 def _only_tip_slice(picks: list[TipPick], operation: str) -> TipPick:
     """The one rack slice a Flex tip command can address."""
     if len(picks) > 1:
@@ -794,6 +823,7 @@ def _only_tip_slice(picks: list[TipPick], operation: str) -> TipPick:
     return picks[0]
 
 
+@asks_the_instrument_nothing
 def _heads_holding_tips(
     flex: OpentronsFlex, use_channels: list[int] | None, operation: str
 ) -> list[_MountHead]:
@@ -869,6 +899,7 @@ async def _lift_everything_that_hangs(flex: OpentronsFlex) -> None:
         await flex.retract_axis(axis)
 
 
+@asks_the_instrument_nothing
 def _require_mounted_tips(head: _AnyHead, operation: str) -> None:
     """Refuse an op that drives mounted tips from a head that holds none."""
     if all(tip is None for tip in head.get_mounted_tips()):
@@ -877,6 +908,7 @@ def _require_mounted_tips(head: _AnyHead, operation: str) -> None:
         )
 
 
+@asks_the_instrument_nothing
 def _require_head96(flex: OpentronsFlex, operation: str) -> FlexHead96:
     """The 96 head a whole-plate op needs."""
     head = flex.head96
@@ -887,6 +919,7 @@ def _require_head96(flex: OpentronsFlex, operation: str) -> FlexHead96:
     return head
 
 
+@asks_the_instrument_nothing
 def _head96_target(flex: OpentronsFlex, labware: str) -> PLRPlate | PLRContainer:
     """The whole plate or single-cavity container the 96 head covers."""
     resource = flex.deck.get_resource(labware)
@@ -916,10 +949,11 @@ async def _reparent_to_slot(flex: OpentronsFlex, resource: PLRResource, slot: st
         return
     occupant = deck.get_resource_at_slot(slot)
     if occupant is not None and occupant is not resource:
-        raise ValueError(
-            f"Cannot place '{resource.name}' at {slot}: the deck projection has "
-            f"'{occupant.name}' there. Reconcile deck occupancy before moving."
-        )
+        with before_the_instrument_is_asked():
+            raise ValueError(
+                f"Cannot place '{resource.name}' at {slot}: the deck projection has "
+                f"'{occupant.name}' there. Reconcile deck occupancy before moving."
+            )
     await flex.labware_moved_off_deck(resource)
     if resource.parent is not None:
         resource.unassign()
@@ -941,20 +975,26 @@ class _MountedTip(NamedTuple):
 # can hold, since which one is fitted is known only after the robot answers and
 # a driver advertises before it has connected. A 96-channel head is never on a
 # mount: it lands on `head96`.
+# Every vendor command is offered the lift; the wire lifts only before one that moves (`lift_before_first_move`).
 _FLEX_VENDOR_SURFACES: tuple[VendorSurface, ...] = (
-    VendorSurface(path="_flex", type=OpentronsFlex),
-    VendorSurface(path="_flex.gripper", type=FlexGripper, prefix="gripper"),
-    VendorSurface(path="_flex.head96", type=FlexHead96, prefix="head96"),
+    VendorSurface(path="_flex", type=OpentronsFlex, travels=every_command_of(OpentronsFlex)),
+    VendorSurface(path="_flex.gripper", type=FlexGripper, prefix="gripper", travels=every_command_of(FlexGripper)),
+    VendorSurface(path="_flex.head96", type=FlexHead96, prefix="head96", travels=every_command_of(FlexHead96)),
 ) + tuple(
-    VendorSurface(path=f"_flex.{mount}", type=head, prefix=mount)
+    VendorSurface(path=f"_flex.{mount}", type=head, prefix=mount, travels=every_command_of(head))
     for mount in ("left", "right")
     for head in (FlexHead1, FlexHead8)
 )
 
+_TRAVELS_OUTSIDE_A_TRANSFER: frozenset[str] = frozenset({"park_gantry", "move_gripper_to"})
+"""Commands no transfer needs, so tips on a head refuse them as well as a loaded gripper."""
+
 
 class FlexLiquidHandlerDriver(
+    RetractsHeadsBeforeTravel,
     VendorSurfaceForwarding,
     InterruptedMoveTracking,
+    GripsAStandIn,
     ILiquidHandlerDriver,
     ILiquidProbeDriver,
     IPipetteMotionDriver,
@@ -1015,13 +1055,15 @@ class FlexLiquidHandlerDriver(
         self._visualize = visualize
         self._visualizer: Visualizer | None = None
         self.wire_timeout = resolve_wire_timeout(wire_timeout, type(self), poll_interval=0.2)
+        self._gate = FirstMoveGate()
+        self._wire = LiftBeforeFirstMove(transport or self._budgeted_transport(host, port), self._gate)
         # Built here, not in configure_deck: reaching a robot must not require
         # declaring its deck first. configure_deck attaches the real one.
         self._flex: OpentronsFlex | None = OpentronsFlex(
             deck=FlexDeck(),
             host=host,
             port=port,
-            transport=transport or self._budgeted_transport(host, port),
+            transport=self._wire,
             command_timeout=self.wire_timeout.seconds,
             status_poll_interval=self.wire_timeout.poll_interval_seconds,
         )
@@ -1096,7 +1138,8 @@ class FlexLiquidHandlerDriver(
         """
         mounts, requires_intervention = await self._reconcile_mounts(flex)
         if requires_intervention:
-            raise RuntimeError(
+            # The tip sensor was read and nothing on the deck moved.
+            raise DriverRejectedError(
                 f"{_reconcile_message(False, mounts)}. Run discard_stranded_tips (or clear "
                 f"the tip at the instrument), then initialize again."
             )
@@ -1146,7 +1189,7 @@ class FlexLiquidHandlerDriver(
         it holds before taking another, so the cost is the dropped session, not
         a run stranded on the robot.
 
-        Takes far longer than the interface's default allows: under DEVICE_SIM
+        Takes far longer than the interface's default allows: under SIM
         this is what starts the robot's own simulator, which alone budgets 90s
         to answer.
         """
@@ -1278,12 +1321,14 @@ class FlexLiquidHandlerDriver(
             carried.setdefault(held.rack, set()).add(held.position)
         return carried
 
+    @asks_the_instrument_nothing
     def _require_flex(self, operation: str) -> OpentronsFlex:
         """The robot object, which exists from construction until disposal."""
         if self._flex is None:
             raise RuntimeError(f"{operation} called on a disposed LiquidHandler")
         return self._flex
 
+    @asks_the_instrument_nothing
     def _require_deck(self, operation: str) -> OpentronsFlex:
         """The robot, refusing ops that address deck contents before a deck exists."""
         if not self._deck_configured:
@@ -1505,7 +1550,7 @@ class FlexLiquidHandlerDriver(
         # the escape must not need configure_deck when the report naming it does not.
         flex = self._require_flex("discard_stranded_tips")
         if flex.run_id is None:
-            raise RuntimeError(
+            raise DriverRejectedError(
                 "discard_stranded_tips called before connect; connect and initialize first"
             )
         if not await flex.run_is_live():
@@ -1514,6 +1559,8 @@ class FlexLiquidHandlerDriver(
         for _, head in _named_heads(flex):
             tracked = any(tip is not None for tip in head.get_mounted_tips())
             if not tracked and await head.has_tip_on_hardware() is True:
+                # Lifted here, not before the command: the session may need rebuilding first.
+                await _lift_everything_that_hangs(flex)
                 await head.unsafe_discard_tips(trash)
                 self._forget_pick(head)
         return await self.reconcile_hardware_state(ReconcileHardwareStateRequest())
@@ -1726,7 +1773,8 @@ class FlexLiquidHandlerDriver(
             )
             return self._state(flex)
         if request.drops is None:
-            raise ValueError("drop_tips: drops is required when to_waste=False.")
+            with before_the_instrument_is_asked():
+                raise ValueError("drop_tips: drops is required when to_waste=False.")
         drop = _only_tip_slice(request.drops, "drop_tips")
         head = _resolve_head(
             flex,
@@ -1739,10 +1787,11 @@ class FlexLiquidHandlerDriver(
         )
         _require_mounted_tips(head, "drop_tips")
         if len(drop.positions) == 1 and not isinstance(head, FlexHead1):
-            raise ValueError(
-                "drop_tips: the 8-channel head returns a whole column to a rack, never one spot. "
-                "Send the column, or discard the tip to waste (to_waste=True)."
-            )
+            with before_the_instrument_is_asked():
+                raise ValueError(
+                    "drop_tips: the 8-channel head returns a whole column to a rack, never one spot. "
+                    "Send the column, or discard the tip to waste (to_waste=True)."
+                )
         rack = _require_tip_rack(flex, drop.tip_rack)
         with _undo_partial_staging(rack):
             if isinstance(head, FlexHead1):
@@ -1793,8 +1842,22 @@ class FlexLiquidHandlerDriver(
     async def move_plate(self, request: MovePlateRequest) -> None:
         flex = self._require_deck("move_plate")
         gripper = self._require_gripper("move_plate")
-        resource = flex.deck.get_resource(request.plate)
         to_slot = _require_slot(request.to_position, "move_plate.to_position")
+        if request.plate is None:
+            assert request.from_position is not None
+            from_slot = _require_slot(request.from_position, "move_plate.from_position")
+            stand_in = default_grip_labware(self._stand_in)
+            flex.deck.assign_child_at_slot(stand_in, from_slot)
+            try:
+                async with self._tracking_gripper_move(None, request.to_position, request.from_position):
+                    await gripper.move_labware(
+                        stand_in, to_slot, grip_distance_from_top=request.grip_distance_from_top,
+                    )
+            finally:
+                await self._take_the_stand_in_off(flex, stand_in)
+            return
+        with before_the_instrument_is_asked():
+            resource = flex.deck.get_resource(request.plate)
         if request.from_position is not None:
             from_slot = _require_slot(request.from_position, "move_plate.from_position")
             await _reparent_to_slot(flex, resource, from_slot)
@@ -1804,6 +1867,17 @@ class FlexLiquidHandlerDriver(
             await gripper.move_labware(
                 resource, to_slot, grip_distance_from_top=request.grip_distance_from_top
             )
+
+    async def _take_the_stand_in_off(self, flex: OpentronsFlex, stand_in: PLRResource) -> None:
+        """Off the robot's deck and the projection, so the record gains nothing; a failed robot call only logs,
+        so it never hides the move's own error."""
+        try:
+            await flex.labware_moved_off_deck(stand_in)
+        except Exception:
+            logger.warning("the default-grip stand-in could not be taken off the robot's deck", exc_info=True)
+        finally:
+            if stand_in.parent is not None:
+                stand_in.unassign()
 
     async def liquid_probe(self, request: LiquidProbeRequest) -> LiquidProbeResponse:
         flex = self._require_deck("liquid_probe")
@@ -1867,7 +1941,8 @@ class FlexLiquidHandlerDriver(
             await head.drop_tips(flex.deck.get_trash_area96())
         else:
             if request.tip_rack is None:
-                raise ValueError("drop_tips96: tip_rack is required when to_waste=False.")
+                with before_the_instrument_is_asked():
+                    raise ValueError("drop_tips96: tip_rack is required when to_waste=False.")
             rack = _require_tip_rack(flex, request.tip_rack)
             with _undo_partial_staging(rack):
                 await head.drop_tips(rack)
@@ -1877,6 +1952,14 @@ class FlexLiquidHandlerDriver(
     async def return_tips96(self, request: ReturnTips96Request) -> LabwareStateResponse:
         flex = self._require_deck("return_tips96")
         head = _require_head96(flex, "return_tips96")
+        with before_the_instrument_is_asked():
+            rack = self._rack_to_return_to(flex, head)
+        with _undo_partial_staging(rack):
+            await head.drop_tips(rack)
+        self._forget_pick(head)
+        return self._state(flex)
+
+    def _rack_to_return_to(self, flex: OpentronsFlex, head: FlexHead96) -> PLRTipRack:
         origins = self._racks_the_tips_came_from(head)
         if not origins:
             raise ValueError(
@@ -1889,19 +1972,16 @@ class FlexLiquidHandlerDriver(
                 f"all to one rack. Name the rack on drop_tips96."
             )
         try:
-            rack = _require_tip_rack(flex, origins[0])
-        except PLRResourceNotFoundError:
+            return _require_tip_rack(flex, origins[0])
+        except CheckedBeforeAskingError:
             raise ValueError(
                 f"return_tips96: rack '{origins[0]}' the tips came from is no longer on the deck. "
                 f"Put it back, or discard the tips to waste."
             ) from None
-        with _undo_partial_staging(rack):
-            await head.drop_tips(rack)
-        self._forget_pick(head)
-        return self._state(flex)
 
     # --- Motion ---
 
+    @asks_the_instrument_nothing
     def _head_for_channel(self, channel: int, operation: str) -> _AnyHead:
         """The head a channel index moves.
 
@@ -1920,6 +2000,7 @@ class FlexLiquidHandlerDriver(
         raise ValueError(f"{operation}: no mounted head has channel {channel} "
                          f"({_describe_heads(flex)}).")
 
+    @asks_the_instrument_nothing
     def _require_gripper(self, operation: str) -> FlexGripper:
         """The Flex gripper, which is optional hardware."""
         flex = self._require_flex(operation)
@@ -1956,16 +2037,31 @@ class FlexLiquidHandlerDriver(
             z_reference="tip_end",
         )
 
+    async def _retract_heads(self, command: str) -> None:
+        flex = self._flex
+        if flex is None:
+            return
+        if command in _TRAVELS_OUTSIDE_A_TRANSFER:
+            # Nothing is left to check, so the refusal and the lift go now.
+            self._refuse_while_mid_work(flex, command)
+            if flex.run_id is not None:
+                await _lift_everything_that_hangs(flex)
+            return
+        self._gate.arm(lambda: self._lift_unless_loaded(flex, command))
+
+    async def _lift_unless_loaded(self, flex: OpentronsFlex, command: str) -> None:
+        self._refuse_while_mid_work(flex, command)
+        await _lift_everything_that_hangs(flex)
+
     def _refuse_while_mid_work(self, flex: OpentronsFlex, operation: str) -> None:
         """Refuse to travel while something is still hanging off the gantry.
 
         One gantry carries both pipette mounts and the gripper, so travelling
-        drags whatever any of them is holding across the deck. Two things count
-        and both have to be asked about: tips on a head, and a plate in the
-        jaws. Only tips used to be, and a gripper move that stalled with a plate
-        clamped in the jaws sailed through into a collision.
+        drags whatever any of them is holding across the deck. A plate in the
+        jaws refuses every travel. Tips on a head refuse only a travel that is
+        no part of a transfer.
         """
-        reason = _tips_refusal(flex)
+        reason = _tips_refusal(flex) if operation in _TRAVELS_OUTSIDE_A_TRANSFER else None
         if reason is None and self._jaws_may_be_loaded:
             reason = (
                 "the gripper jaws may still be holding something. Open them "
@@ -1975,18 +2071,11 @@ class FlexLiquidHandlerDriver(
             raise GantryBusyError(f"{operation}: {reason}")
 
     async def move_gripper_to(self, request: MoveGripperToRequest) -> None:
-        flex = self._require_flex("move_gripper_to")
-        self._refuse_while_mid_work(flex, "move_gripper_to")
         gripper = self._require_gripper("move_gripper_to")
-        await _lift_everything_that_hangs(flex)
         await gripper.move_to(x=request.x, y=request.y, z=request.z)
 
     async def park_gantry(self, request: ParkGantryRequest) -> None:
         flex = self._require_flex("park_gantry")
-        self._refuse_while_mid_work(flex, "park_gantry")
-        # Everything up before anything travels. One gantry carries both pipette
-        # mounts and the gripper, so a mount left down is dragged across the deck.
-        await _lift_everything_that_hangs(flex)
         if request.at is not None:
             gripper = self._require_gripper("park_gantry")
             await gripper.move_to(x=request.at.x, y=request.at.y, z=request.at.z)

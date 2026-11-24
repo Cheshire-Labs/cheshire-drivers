@@ -106,6 +106,8 @@ Mock implementations for testing without hardware:
 | `SimDelidderDriver` | Simulated delidder |
 | `SimReaderDriver` | Simulated plate reader |
 
+A device with a real driver is simulated by a simulator built for that driver, with the same interfaces: `SimSTARLiquidHandlerDriver`, `SimOT2LiquidHandlerDriver`, `SimFlexLiquidHandlerDriver`, `SimPLRLiquidHandlerDriver`, and a `Chatterbox*` variant of each for a handler that models its deck. Sim, a check run and live accept the same commands.
+
 ### Teachpoints
 
 Position management for robotic arms:
@@ -125,6 +127,21 @@ Position management for robotic arms:
 | `VenusProtocolDriver` | Runs Hamilton Venus protocols |
 | `SimulationVenusProtocolDriver` | Simulated Venus driver |
 | `NullPlatePadDriver` | Placeholder for locations without active devices |
+
+## Hardware status
+
+Run on real hardware (the Opentrons Flex and PreciseFlex PF400 bench, tag `flex-pf400-hardware-proven-2026-09-04`):
+
+- `FlexLiquidHandlerDriver` (Opentrons Flex)
+- `PreciseFlexTransporterDriver` (Brooks PreciseFlex PF400)
+
+Never run on real hardware. They are written against the vendor libraries and tested in simulation only:
+
+- `STARLiquidHandlerDriver` (Hamilton STAR)
+- `OT2LiquidHandlerDriver` (Opentrons OT-2)
+- `VenusProtocolDriver` (Hamilton Venus)
+- `A4SSealerDriver` (A4S sealer)
+- The PyLabRobot wrappers: `PLRShakerBackendWrapper`, `PLRSealerBackendWrapper`, `PLRCentrifugeBackendWrapper`, `PLRThermocyclerBackendWrapper`, `PLRTransporterBackendWrapper`, `PLRLiquidHandlerWrapper`
 
 ## Contributing
 

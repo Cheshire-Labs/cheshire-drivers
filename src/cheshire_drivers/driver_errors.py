@@ -19,8 +19,11 @@ guess is what turned a correct refusal into a device fault on 2026-09-02.
 """
 
 import sys
+from contextlib import contextmanager
+from dataclasses import dataclass
+from functools import wraps
 from enum import Enum
-from typing import ClassVar, Iterator, Mapping, Optional, Sequence
+from typing import Callable, ClassVar, Iterator, Mapping, Optional, ParamSpec, Sequence, TypeVar
 
 from pydantic import JsonValue
 
@@ -103,6 +106,60 @@ class DriverRejectedError(DriverError):
     outcome: ClassVar[InstrumentOutcome] = InstrumentOutcome.REJECTED
 
 
+class CheckedBeforeAskingError(DriverRejectedError):
+    """A check the driver made before it asked the instrument failed, so nothing moved.
+
+    Raised from the check's own error, and reported upstream under that error's name.
+    """
+
+
+_SAME_ERROR_REJECTED: dict[type[Exception], type[Exception]] = {}
+
+
+def rejected_before_asking(failed: Exception) -> Exception:
+    """The same error, also a rejected driver error.
+
+    It keeps the class name, the text and the base class of ``failed``, so a caller that catches ``ValueError``
+    still does and the wire still names ``ValueError``. An error whose class cannot be combined is wrapped.
+    """
+    kind = type(failed)
+    combined = _SAME_ERROR_REJECTED.get(kind)
+    if combined is None:
+        try:
+            combined = type(kind.__name__, (CheckedBeforeAskingError, kind), {"__module__": kind.__module__})
+        except TypeError:
+            return CheckedBeforeAskingError(str(failed) or kind.__name__)
+        _SAME_ERROR_REJECTED[kind] = combined
+    same = BaseException.__new__(combined, *failed.args)
+    same.__dict__.update(failed.__dict__)
+    assert isinstance(same, Exception)
+    return same
+
+
+@contextmanager
+def before_the_instrument_is_asked() -> Iterator[None]:
+    """The part of a command that runs before the instrument is asked: a failure in it moved nothing."""
+    try:
+        yield
+    except DriverError:
+        raise
+    except Exception as failed:
+        raise rejected_before_asking(failed) from failed
+
+
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
+
+
+def asks_the_instrument_nothing(check: Callable[_P, _R]) -> Callable[_P, _R]:
+    """Mark a lookup or check that never contacts the instrument: its failure moved nothing."""
+    @wraps(check)
+    def checked(*args: _P.args, **kwargs: _P.kwargs) -> _R:
+        with before_the_instrument_is_asked():
+            return check(*args, **kwargs)
+    return checked
+
+
 class DriverOutcomeUnknownError(DriverError):
     """The command was dispatched and its answer never came back.
 
@@ -124,6 +181,21 @@ def outcome_of(exc: BaseException) -> InstrumentOutcome:
     if isinstance(outcome, InstrumentOutcome):
         return outcome
     return InstrumentOutcome.FAILED
+
+@dataclass(frozen=True)
+class FailureReport:
+    """What a failed command reports upstream: the text, the error's type, and what it left the instrument in."""
+
+    error: str
+    error_type: str
+    instrument_outcome: InstrumentOutcome
+
+
+def report_failure(exc: BaseException) -> FailureReport:
+    """The one reading of a failed command, for the wire response."""
+    named = exc.__cause__ if isinstance(exc, CheckedBeforeAskingError) and exc.__cause__ is not None else exc
+    return FailureReport(explain_driver_error(exc), type(named).__name__, outcome_of(exc))
+
 
 # A cause chain or a wrapped-error tree is data from the instrument, so both
 # get a ceiling rather than being trusted to be small.

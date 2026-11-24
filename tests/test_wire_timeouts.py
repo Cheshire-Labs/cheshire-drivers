@@ -147,7 +147,7 @@ class TestOpentronsDriversAreWiredToIt:
 
         flex = driver._flex
         assert flex is not None
-        transport = flex._transport
+        transport = driver._wire.inner
         assert isinstance(transport, HttpxTransport)
         assert transport.io.serialize()["timeout"] == 1200.0
 
@@ -172,7 +172,7 @@ class TestOpentronsDriversAreWiredToIt:
 
         flex = driver._flex
         assert flex is not None
-        assert flex._transport is injected
+        assert driver._wire.inner is injected
         # The command budget is the robot's, not the transport's, so it still applies.
         assert flex.command_timeout == driver.wire_timeout.seconds
 

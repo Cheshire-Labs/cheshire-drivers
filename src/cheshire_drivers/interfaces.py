@@ -1,8 +1,12 @@
 from abc import ABC, abstractmethod
-from typing import ClassVar, Literal
+from typing import Annotated, ClassVar, Literal
 
-from cheshire_drivers.command_timings import command_timing
-from cheshire_drivers.driver_introspection import external
+from pydantic import Field
+
+from cheshire_drivers.command_timings import command_timing, simulator_does_not_wait
+from cheshire_drivers.driver_hooks import DriverHooks
+from cheshire_drivers.command_responses import ConnectedResponse, InitializedResponse, TemperatureResponse
+from cheshire_drivers.driver_introspection import external, lifecycle, returns
 from cheshire_drivers.liquid_handler_models import (
     AspirateRequest, Aspirate96Request,
     DeckLayoutConfig,
@@ -93,6 +97,7 @@ from cheshire_drivers.transporter_models import (
     SeedPositionRequest,
     SetFreeModeRequest,
     SetSpeedRequest,
+    SpeedResponse,
     UnseedPositionRequest,
 )
 from cheshire_drivers.pipette_motion_models import (
@@ -106,6 +111,8 @@ from cheshire_drivers.gripper_models import (
     GetGripperRotationRequest,
     GetJawWidthRequest,
     GripperPosition,
+    GripperRotationResponse,
+    JawWidthResponse,
     GripWithForceRequest,
     MoveGripperRelativeRequest,
     MoveGripperToRequest,
@@ -114,12 +121,15 @@ from cheshire_drivers.gripper_models import (
     SetJawWidthRequest,
 )
 
-# Axis names for single-axis movement and free mode control
-AxisName = Literal["rail", "base", "shoulder", "elbow", "wrist", "gripper"]
+# A joint name the transporter's model declares, for single-axis movement and free mode control.
+AxisName = str
+
+Temperature = Annotated[float, Field(ge=-20, le=200)]
+"""A set point in Celsius, bounded for every sender."""
 
 
-class BaseDriver(ABC):
-    """Base contract for all device drivers.
+class BaseDriver(DriverHooks, ABC):
+    """Base contract for all device drivers. It inherits the driver hooks, so no driver exists without them.
 
     Cancellation contract: every command method is a cancellable coroutine.
     When the caller cancels it (the engine's recoverable-timeout abort/
@@ -133,8 +143,10 @@ class BaseDriver(ABC):
     not the driver.
     """
 
+    @lifecycle
     @external
     @abstractmethod
+    @simulator_does_not_wait
     @command_timing(typical=30.0, max=120.0)
     async def initialize(self) -> None:
         """Bring the device up so it accepts commands.
@@ -149,12 +161,14 @@ class BaseDriver(ABC):
     @property
     @external
     @abstractmethod
+    @returns(InitializedResponse)
     def is_initialized(self) -> bool:
         """Returns whether the driver is initialized or not."""
         ...
 
     @property
     @external
+    @returns(ConnectedResponse)
     def is_connected(self) -> bool:
         """Whether THIS DEVICE's link to its hardware is open.
 
@@ -173,20 +187,22 @@ class BaseDriver(ABC):
 
     @external
     @abstractmethod
-    @command_timing(typical=5.0, max=30.0)
+    @command_timing(typical=3.0, max=30.0)
     async def open(self) -> None:
         """Open driver door."""
         ...
 
     @external
     @abstractmethod
-    @command_timing(typical=5.0, max=30.0)
+    @command_timing(typical=3.0, max=30.0)
     async def close(self) -> None:
         """Close driver door."""
         ...
 
+    @lifecycle
     @external
-    @command_timing(typical=5.0, max=30.0)
+    @simulator_does_not_wait
+    @command_timing(typical=3.0, max=30.0)
     async def connect(self) -> None:
         """Open the link to the device and confirm it answers. Moves nothing.
 
@@ -203,7 +219,9 @@ class BaseDriver(ABC):
         """
         return None
 
+    @lifecycle
     @external
+    @simulator_does_not_wait
     @command_timing(typical=2.0, max=15.0)
     async def disconnect(self) -> None:
         """Hand the device back to its own controls, without moving it.
@@ -219,11 +237,10 @@ class BaseDriver(ABC):
         return None
 
     async def _shutdown(self) -> None:
-        """Local disposal hook (``DeviceRegistry.cleanup_all`` calls it once when
-        releasing the driver). Distinct from ``close`` (the per-op 'close door'
+        """Local disposal hook, called once when a client releases the driver. Distinct from ``close`` (the per-op 'close door'
         wire command): the underscore keeps ``_shutdown`` off the wire and
         capability surface. Default no-op; drivers owning out-of-process
-        resources (a device-sim vendor server) override it to stop them."""
+        resources (a vendor simulator server) override it to stop them."""
 
 
 
@@ -252,14 +269,14 @@ class IShakerDriver(BaseDriver, ABC):
 
     @external
     @abstractmethod
-    @command_timing(typical=5.0, max=30.0)
+    @command_timing(typical=3.0, max=30.0)
     async def unlock_plate(self, request: UnlockPlateRequest) -> None:
         """Unlock the plate"""
         ...
 
     @external
     @abstractmethod
-    @command_timing(typical=5.0, max=30.0)
+    @command_timing(typical=3.0, max=30.0)
     async def lock_plate(self, request: LockPlateRequest) -> None:
         """Lock the plate"""
         ...
@@ -297,36 +314,40 @@ class ISealerDriver(BaseDriver, ABC):
     @external
     @abstractmethod
     @command_timing(typical=2.0, max=10.0)
-    async def set_temperature(self, temperature: float) -> None:
+    async def set_temperature(self, temperature: Temperature) -> None:
         """Set the temperature."""
         ...
 
     @external
     @abstractmethod
+    @simulator_does_not_wait
     @command_timing(typical=1.0, max=5.0)
+    @returns(TemperatureResponse)
     async def get_temperature(self) -> float:
         """Get the current temperature."""
         ...
 
 
 
-class ITempSettableDriver(ABC):
+class ITempSettableDriver(DriverHooks, ABC):
     interfaces: ClassVar[frozenset[str]] = frozenset({"ITempSettable"})
 
     @external
     @abstractmethod
     @command_timing(typical=2.0, max=10.0)
-    async def set_temperature(self, temperature: float) -> None:
+    async def set_temperature(self, temperature: Temperature) -> None:
         """Set the temperature of the device."""
         ...
 
 
-class ITempGettableDriver(ABC):
+class ITempGettableDriver(DriverHooks, ABC):
     interfaces: ClassVar[frozenset[str]] = frozenset({"ITempGettable"})
 
     @external
     @abstractmethod
+    @simulator_does_not_wait
     @command_timing(typical=1.0, max=5.0)
+    @returns(TemperatureResponse)
     async def get_temperature(self) -> float:
         """Get the current temperature of the device."""
         ...
@@ -345,22 +366,24 @@ class IProtocolRunnerDriver(BaseDriver, ABC):
     # The four handoff hooks: a vendor protocol often has to know what labware
     # a transporter brings to or takes from which site.
     @abstractmethod
-    @command_timing(typical=60.0, max=3600.0)
+    @command_timing(typical=3.0, max=3600.0)
     async def prepare_for_place(self, request: LabwareHandoffRequest) -> None:
         ...
 
     @abstractmethod
-    @command_timing(typical=60.0, max=3600.0)
+    @simulator_does_not_wait
+    @command_timing(typical=3.0, max=3600.0)
     async def notify_placed(self, request: LabwareHandoffRequest) -> None:
         ...
 
     @abstractmethod
-    @command_timing(typical=60.0, max=3600.0)
+    @command_timing(typical=3.0, max=3600.0)
     async def prepare_for_pick(self, request: LabwareHandoffRequest) -> None:
         ...
 
     @abstractmethod
-    @command_timing(typical=60.0, max=3600.0)
+    @simulator_does_not_wait
+    @command_timing(typical=3.0, max=3600.0)
     async def notify_picked(self, request: LabwareHandoffRequest) -> None:
         ...
 
@@ -381,14 +404,14 @@ class IThermocyclerDriver(BaseDriver, ABC):
 
     @external
     @abstractmethod
-    @command_timing(typical=5.0, max=30.0)
+    @command_timing(typical=3.0, max=30.0)
     async def open_lid(self, request: OpenLidRequest) -> None:
         """Open the thermocycler lid."""
         ...
 
     @external
     @abstractmethod
-    @command_timing(typical=5.0, max=30.0)
+    @command_timing(typical=3.0, max=30.0)
     async def close_lid(self, request: CloseLidRequest) -> None:
         """Close the thermocycler lid."""
         ...
@@ -430,6 +453,7 @@ class IThermocyclerDriver(BaseDriver, ABC):
 
     @external
     @abstractmethod
+    @simulator_does_not_wait
     @command_timing(typical=1.0, max=5.0)
     async def get_block_current_temperature(
         self, request: GetBlockCurrentTemperatureRequest,
@@ -439,6 +463,7 @@ class IThermocyclerDriver(BaseDriver, ABC):
 
     @external
     @abstractmethod
+    @simulator_does_not_wait
     @command_timing(typical=1.0, max=5.0)
     async def get_block_target_temperature(
         self, request: GetBlockTargetTemperatureRequest,
@@ -448,6 +473,7 @@ class IThermocyclerDriver(BaseDriver, ABC):
 
     @external
     @abstractmethod
+    @simulator_does_not_wait
     @command_timing(typical=1.0, max=5.0)
     async def get_lid_current_temperature(
         self, request: GetLidCurrentTemperatureRequest,
@@ -457,6 +483,7 @@ class IThermocyclerDriver(BaseDriver, ABC):
 
     @external
     @abstractmethod
+    @simulator_does_not_wait
     @command_timing(typical=1.0, max=5.0)
     async def get_lid_target_temperature(
         self, request: GetLidTargetTemperatureRequest,
@@ -466,6 +493,7 @@ class IThermocyclerDriver(BaseDriver, ABC):
 
     @external
     @abstractmethod
+    @simulator_does_not_wait
     @command_timing(typical=1.0, max=5.0)
     async def get_lid_open(self, request: GetLidOpenRequest) -> LidOpenResponse:
         """Return whether the lid is open."""
@@ -473,6 +501,7 @@ class IThermocyclerDriver(BaseDriver, ABC):
 
     @external
     @abstractmethod
+    @simulator_does_not_wait
     @command_timing(typical=1.0, max=5.0)
     async def get_lid_status(self, request: GetLidStatusRequest) -> ThermocyclerStatusResponse:
         """Get the lid temperature status."""
@@ -480,6 +509,7 @@ class IThermocyclerDriver(BaseDriver, ABC):
 
     @external
     @abstractmethod
+    @simulator_does_not_wait
     @command_timing(typical=1.0, max=5.0)
     async def get_block_status(self, request: GetBlockStatusRequest) -> ThermocyclerStatusResponse:
         """Get the block temperature status."""
@@ -487,6 +517,7 @@ class IThermocyclerDriver(BaseDriver, ABC):
 
     @external
     @abstractmethod
+    @simulator_does_not_wait
     @command_timing(typical=1.0, max=5.0)
     async def get_hold_time(self, request: GetHoldTimeRequest) -> HoldTimeResponse:
         """Get the remaining hold time in seconds."""
@@ -494,6 +525,7 @@ class IThermocyclerDriver(BaseDriver, ABC):
 
     @external
     @abstractmethod
+    @simulator_does_not_wait
     @command_timing(typical=1.0, max=5.0)
     async def get_current_cycle_index(
         self, request: GetCurrentCycleIndexRequest,
@@ -503,6 +535,7 @@ class IThermocyclerDriver(BaseDriver, ABC):
 
     @external
     @abstractmethod
+    @simulator_does_not_wait
     @command_timing(typical=1.0, max=5.0)
     async def get_total_cycle_count(
         self, request: GetTotalCycleCountRequest,
@@ -512,6 +545,7 @@ class IThermocyclerDriver(BaseDriver, ABC):
 
     @external
     @abstractmethod
+    @simulator_does_not_wait
     @command_timing(typical=1.0, max=5.0)
     async def get_current_step_index(
         self, request: GetCurrentStepIndexRequest,
@@ -521,6 +555,7 @@ class IThermocyclerDriver(BaseDriver, ABC):
 
     @external
     @abstractmethod
+    @simulator_does_not_wait
     @command_timing(typical=1.0, max=5.0)
     async def get_total_step_count(
         self, request: GetTotalStepCountRequest,
@@ -545,13 +580,13 @@ class IDelidderDriver(BaseDriver, ABC):
 
     @external
     @abstractmethod
-    @command_timing(typical=15.0, max=60.0)
+    @command_timing(typical=3.0, max=60.0)
     async def delid(self, request: DelidRequest) -> None:
         """Remove the lid from the specified labware."""
         ...
 
 
-class IHomeableDriver(ABC):
+class IHomeableDriver(DriverHooks, ABC):
     """A device that can be told to drive its axes back to a known reference.
 
     Its own capability rather than part of any device kind, because which
@@ -565,7 +600,7 @@ class IHomeableDriver(ABC):
 
     @external
     @abstractmethod
-    @command_timing(typical=30.0, max=120.0)
+    @command_timing(typical=10.0, max=120.0)
     async def home(self, request: HomeRequest) -> None:
         """Drive every axis to its reference position. MOVES THE DEVICE.
 
@@ -596,8 +631,10 @@ class ITransporterDriver(IHomeableDriver, ABC):
         time is NOT this. Engine-read scheduling metadata, not a command."""
         return False
 
+    @lifecycle
     @external
     @abstractmethod
+    @simulator_does_not_wait
     @command_timing(typical=30.0, max=120.0)
     async def initialize(self, request: InitializeRequest) -> None:
         """Bring the arm up so it accepts commands.
@@ -611,13 +648,15 @@ class ITransporterDriver(IHomeableDriver, ABC):
 
     @external
     @abstractmethod
-    @command_timing(typical=10.0, max=30.0)
+    @command_timing(typical=3.0, max=30.0)
     async def move_to_safe(self, request: MoveToSafeRequest) -> None:
         """Moves the transporter to a safe position."""
         ...
 
+    @lifecycle
     @external
-    @command_timing(typical=5.0, max=30.0)
+    @simulator_does_not_wait
+    @command_timing(typical=3.0, max=30.0)
     async def connect(self) -> None:
         """Open the link to the arm and confirm it answers. Moves nothing.
 
@@ -625,7 +664,9 @@ class ITransporterDriver(IHomeableDriver, ABC):
         """
         return None
 
+    @lifecycle
     @external
+    @simulator_does_not_wait
     @command_timing(typical=2.0, max=15.0)
     async def disconnect(self) -> None:
         """Hand the arm back, without moving it. See `BaseDriver.disconnect`.
@@ -638,19 +679,21 @@ class ITransporterDriver(IHomeableDriver, ABC):
     @property
     @external
     @abstractmethod
+    @returns(InitializedResponse)
     def is_initialized(self) -> bool:
         """Returns whether the driver is initialized or not."""
         ...
 
     @property
     @external
+    @returns(ConnectedResponse)
     def is_connected(self) -> bool:
         """Whether the arm's own link is open. See `BaseDriver.is_connected`."""
         return self.is_initialized
 
     @external
     @abstractmethod
-    @command_timing(typical=10.0, max=60.0)
+    @command_timing(typical=3.0, max=60.0)
     async def pick_at_coords(self, request: PickAtCoordsRequest) -> None:
         """Pick plate at coordinates specified by teachpoint.
 
@@ -664,7 +707,7 @@ class ITransporterDriver(IHomeableDriver, ABC):
 
     @external
     @abstractmethod
-    @command_timing(typical=10.0, max=60.0)
+    @command_timing(typical=3.0, max=60.0)
     async def place_at_coords(self, request: PlaceAtCoordsRequest) -> None:
         """Place plate at coordinates specified by teachpoint.
 
@@ -675,13 +718,14 @@ class ITransporterDriver(IHomeableDriver, ABC):
 
     @external
     @abstractmethod
-    @command_timing(typical=10.0, max=60.0)
+    @command_timing(typical=3.0, max=60.0)
     async def move_to_coords(self, request: MoveToCoordsRequest) -> None:
         """Move to coordinates specified by teachpoint."""
         ...
 
     @external
     @abstractmethod
+    @simulator_does_not_wait
     @command_timing(typical=1.0, max=5.0)
     async def get_joint_position(self, request: GetJointPositionRequest) -> JointCoordinates:
         """Get current joint positions.
@@ -693,6 +737,7 @@ class ITransporterDriver(IHomeableDriver, ABC):
 
     @external
     @abstractmethod
+    @simulator_does_not_wait
     @command_timing(typical=1.0, max=5.0)
     async def get_cartesian_position(self, request: GetCartesianPositionRequest) -> CartesianCoordinates:
         """Get current position in Cartesian coordinates.
@@ -704,14 +749,14 @@ class ITransporterDriver(IHomeableDriver, ABC):
 
     @external
     @abstractmethod
-    @command_timing(typical=10.0, max=60.0)
+    @command_timing(typical=3.0, max=60.0)
     async def move_single_axis(self, request: MoveSingleAxisRequest) -> None:
         """Move a single axis to absolute position."""
         ...
 
     @external
     @abstractmethod
-    @command_timing(typical=10.0, max=60.0)
+    @command_timing(typical=3.0, max=60.0)
     async def move_single_axis_relative(self, request: MoveSingleAxisRelativeRequest) -> None:
         """Move a single axis by relative distance from current position."""
         ...
@@ -753,7 +798,9 @@ class ITransporterDriver(IHomeableDriver, ABC):
 
     @external
     @abstractmethod
+    @simulator_does_not_wait
     @command_timing(typical=1.0, max=5.0)
+    @returns(SpeedResponse)
     async def get_speed(self, request: GetSpeedRequest) -> float:
         """Get current movement speed setting.
 
@@ -776,6 +823,7 @@ class ITransporterDriver(IHomeableDriver, ABC):
     # -- World-state sync (workflow-internal; not operator-facing) --
 
     @abstractmethod
+    @simulator_does_not_wait
     @command_timing(typical=1.0, max=5.0)
     async def seed_position(self, request: SeedPositionRequest) -> None:
         """Declare that `request.labware` is staged at `request.position_id`.
@@ -791,6 +839,7 @@ class ITransporterDriver(IHomeableDriver, ABC):
         ...
 
     @abstractmethod
+    @simulator_does_not_wait
     @command_timing(typical=1.0, max=5.0)
     async def ensure_seeded(self, request: EnsureSeededRequest) -> None:
         """Idempotent variant of `seed_position`.
@@ -806,6 +855,7 @@ class ITransporterDriver(IHomeableDriver, ABC):
         ...
 
     @abstractmethod
+    @simulator_does_not_wait
     @command_timing(typical=1.0, max=5.0)
     async def unseed_position(self, request: UnseedPositionRequest) -> None:
         """Idempotent removal of `request.labware` from `request.position_id`.
@@ -818,6 +868,7 @@ class ITransporterDriver(IHomeableDriver, ABC):
         ...
 
     @abstractmethod
+    @simulator_does_not_wait
     @command_timing(typical=1.0, max=5.0)
     async def reset_world(self, request: ResetWorldRequest) -> None:
         """Wipe ALL labware occupancy from the driver's world projection.
@@ -839,7 +890,7 @@ class IStorageDriver(BaseDriver, ABC):
 
     @external
     @abstractmethod
-    @command_timing(typical=10.0, max=60.0)
+    @command_timing(typical=3.0, max=60.0)
     async def dispense(self) -> None:
         """Release one plate from the source's queue to the output position.
 
@@ -892,7 +943,8 @@ class ILiquidHandlerDriver(BaseDriver, ABC):
 
     @external
     @abstractmethod
-    @command_timing(typical=5.0, max=30.0)
+    @simulator_does_not_wait
+    @command_timing(typical=1.0, max=30.0)
     async def configure_deck(self, config: DeckLayoutConfig) -> LabwareStateResponse:
         """Configure the deck layout with labware positions.
 
@@ -905,6 +957,7 @@ class ILiquidHandlerDriver(BaseDriver, ABC):
 
     @external
     @abstractmethod
+    @simulator_does_not_wait
     @command_timing(typical=2.0, max=10.0)
     async def get_deck_state(self, request: GetDeckStateRequest) -> DeckStateResponse:
         """The driver's own account of its deck: tips, labware, and tip racks.
@@ -919,6 +972,7 @@ class ILiquidHandlerDriver(BaseDriver, ABC):
 
     @external
     @abstractmethod
+    @simulator_does_not_wait
     @command_timing(typical=2.0, max=10.0)
     async def get_head_configuration(
         self, request: GetHeadConfigurationRequest
@@ -933,6 +987,7 @@ class ILiquidHandlerDriver(BaseDriver, ABC):
         ...
 
     @abstractmethod
+    @simulator_does_not_wait
     @command_timing(typical=2.0, max=10.0)
     async def reset_deck_labware(self, request: ResetDeckLabwareRequest) -> LabwareStateResponse:
         """Wipe deck occupancy (plates / tip racks / troughs), preserve carriers.
@@ -944,6 +999,7 @@ class ILiquidHandlerDriver(BaseDriver, ABC):
         ...
 
     @abstractmethod
+    @simulator_does_not_wait
     @command_timing(typical=2.0, max=10.0)
     async def reconcile_deck_occupancy(
         self, request: ReconcileDeckOccupancyRequest,
@@ -958,7 +1014,7 @@ class ILiquidHandlerDriver(BaseDriver, ABC):
 
     @external
     @abstractmethod
-    @command_timing(typical=5.0, max=60.0)
+    @command_timing(typical=1.0, max=60.0)
     async def reconcile_hardware_state(
         self, request: ReconcileHardwareStateRequest,
     ) -> ReconcileHardwareStateResponse:
@@ -997,61 +1053,66 @@ class ILiquidHandlerDriver(BaseDriver, ABC):
 
     @external
     @abstractmethod
-    @command_timing(typical=15.0, max=180.0)
+    @command_timing(typical=3.0, max=180.0)
     async def aspirate(self, request: AspirateRequest) -> LabwareStateResponse:
         """Aspirate liquid from wells."""
         ...
 
     @external
     @abstractmethod
-    @command_timing(typical=15.0, max=180.0)
+    @command_timing(typical=3.0, max=180.0)
     async def dispense(self, request: DispenseRequest) -> LabwareStateResponse:
         """Dispense liquid into wells."""
         ...
 
     @external
     @abstractmethod
-    @command_timing(typical=10.0, max=60.0)
+    @command_timing(typical=3.0, max=60.0)
     async def pick_up_tips(self, request: PickUpTipsRequest) -> LabwareStateResponse:
         """Pick up tips from a tip rack."""
         ...
 
     @external
     @abstractmethod
-    @command_timing(typical=10.0, max=60.0)
+    @command_timing(typical=3.0, max=60.0)
     async def drop_tips(self, request: DropTipsRequest) -> LabwareStateResponse:
         """Drop tips to waste or back to a tip rack."""
         ...
 
     @external
     @abstractmethod
-    @command_timing(typical=10.0, max=60.0)
+    @command_timing(typical=3.0, max=60.0)
     async def discard_tips(self, request: DiscardTipsRequest) -> LabwareStateResponse:
         """Drop currently held tips to waste."""
         ...
 
     @external
     @abstractmethod
-    @command_timing(typical=10.0, max=60.0)
+    @command_timing(typical=3.0, max=60.0)
     async def move_plate(self, request: MovePlateRequest) -> None:
-        """Move a plate to a named position using the internal gripper."""
+        """Move a plate to a named position using the internal gripper.
+
+        With no plate named, the gripper moves from `from_position` with the driver's default labware definition.
+        """
         ...
 
     @abstractmethod
-    @command_timing(typical=10.0, max=60.0)
+    @simulator_does_not_wait
+    @command_timing(typical=1.0, max=60.0)
     async def add_deck_labware(self, request: AddDeckLabwareRequest) -> None:
         """Materialize one labware (plate, tip rack, or trough) on the deck at a site from catalog_ref; for plates this is create-on-arrival before the internal-gripper move."""
         ...
 
     @abstractmethod
-    @command_timing(typical=10.0, max=60.0)
+    @simulator_does_not_wait
+    @command_timing(typical=1.0, max=60.0)
     async def remove_deck_labware(self, request: RemoveDeckLabwareRequest) -> None:
         """Un-materialize one named labware from the deck (departure); unlike reset_deck_labware it removes exactly one."""
         ...
 
     @external
     @abstractmethod
-    @command_timing(typical=30.0, max=600.0)
+    @command_timing(typical=10.0, max=600.0)
     async def mix(self, request: MixRequest) -> LabwareStateResponse:
         """Mix in wells (aspirate/dispense cycles in place)."""
         ...
@@ -1060,35 +1121,35 @@ class ILiquidHandlerDriver(BaseDriver, ABC):
 
     @external
     @abstractmethod
-    @command_timing(typical=20.0, max=180.0)
+    @command_timing(typical=3.0, max=180.0)
     async def aspirate96(self, request: Aspirate96Request) -> LabwareStateResponse:
         """Aspirate from all wells simultaneously using the 96-head."""
         ...
 
     @external
     @abstractmethod
-    @command_timing(typical=20.0, max=180.0)
+    @command_timing(typical=3.0, max=180.0)
     async def dispense96(self, request: Dispense96Request) -> LabwareStateResponse:
         """Dispense to all wells simultaneously using the 96-head."""
         ...
 
     @external
     @abstractmethod
-    @command_timing(typical=15.0, max=120.0)
+    @command_timing(typical=3.0, max=120.0)
     async def pick_up_tips96(self, request: PickUpTips96Request) -> LabwareStateResponse:
         """Pick up 96 tips at once using the 96-head."""
         ...
 
     @external
     @abstractmethod
-    @command_timing(typical=15.0, max=120.0)
+    @command_timing(typical=3.0, max=120.0)
     async def drop_tips96(self, request: DropTips96Request) -> LabwareStateResponse:
         """Drop 96 tips to waste or back to a tip rack."""
         ...
 
     @external
     @abstractmethod
-    @command_timing(typical=15.0, max=120.0)
+    @command_timing(typical=3.0, max=120.0)
     async def return_tips96(self, request: ReturnTips96Request) -> LabwareStateResponse:
         """Return 96-head tips to the rack they were picked up from."""
         ...
@@ -1112,7 +1173,7 @@ class IWasteDriver(IStorageDriver, ABC):
     interfaces: ClassVar[frozenset[str]] = frozenset({"IWaste", "IStorage"})
 
 
-class ILiquidProbeDriver(ABC):
+class ILiquidProbeDriver(DriverHooks, ABC):
     """Find the liquid surface in a well, for a head that can sense it.
 
     Separate from ILiquidHandler because sensing is hardware, not software: a
@@ -1126,13 +1187,13 @@ class ILiquidProbeDriver(ABC):
 
     @external
     @abstractmethod
-    @command_timing(typical=10.0, max=60.0)
+    @command_timing(typical=3.0, max=60.0)
     async def liquid_probe(self, request: LiquidProbeRequest) -> LiquidProbeResponse:
         """Descend a mounted tip until it senses liquid, and report the height it found."""
         ...
 
 
-class IPipetteMotionDriver(ABC):
+class IPipetteMotionDriver(DriverHooks, ABC):
     """Direct per-channel Cartesian motion: place a channel at a known deck point,
     read where it is, and jog it. The troubleshooting / teaching surface, distinct
     from the labware-referenced aspirate/dispense on ILiquidHandler."""
@@ -1141,27 +1202,28 @@ class IPipetteMotionDriver(ABC):
 
     @external
     @abstractmethod
-    @command_timing(typical=5.0, max=30.0)
+    @command_timing(typical=3.0, max=30.0)
     async def move_channel_to(self, request: MoveChannelToRequest) -> None:
         """Move one channel to an absolute deck-frame position (only the supplied axes)."""
         ...
 
     @external
     @abstractmethod
-    @command_timing(typical=5.0, max=30.0)
+    @command_timing(typical=3.0, max=30.0)
     async def move_channel_relative(self, request: MoveChannelRelativeRequest) -> None:
         """Jog one channel by a delta on each supplied axis, from its current position."""
         ...
 
     @external
     @abstractmethod
+    @simulator_does_not_wait
     @command_timing(typical=1.0, max=5.0)
     async def get_channel_position(self, request: GetChannelPositionRequest) -> ChannelPosition:
         """Read one channel's current deck-frame position."""
         ...
 
 
-class IGripperMotionDriver(ABC):
+class IGripperMotionDriver(DriverHooks, ABC):
     """Place the liquid handler's plate gripper at an absolute deck-frame point.
 
     The motion floor every gripper honors. Reading the position and jogging by a delta both
@@ -1172,19 +1234,18 @@ class IGripperMotionDriver(ABC):
 
     @external
     @abstractmethod
-    @command_timing(typical=5.0, max=30.0)
+    @command_timing(typical=3.0, max=30.0)
     async def move_gripper_to(self, request: MoveGripperToRequest) -> None:
         """Move the gripper to an absolute deck-frame position. MOVES THE DEVICE.
 
         Where the gripper shares a carriage with the pipette mounts, this drives
-        them too, so it owes what a park owes: refuse mid-transfer, and lift every
-        populated mount first (see IGantryParkingDriver). Where the gripper is an
-        arm of its own, neither applies and this is a plain move.
+        them too, so it owes what a park owes: refuse mid-transfer (see
+        IGantryParkingDriver). Every head is lifted first, as before any travel.
         """
         ...
 
 
-class IGantryParkingDriver(ABC):
+class IGantryParkingDriver(DriverHooks, ABC):
     """Move the handler's own moving parts clear of its deck, on its own terms.
 
     A gantry stays wherever its last operation left it, and an arm reaching into a
@@ -1198,19 +1259,16 @@ class IGantryParkingDriver(ABC):
     rather than sending an IGripperMotion jog: parking carries a refusal and a
     lift, and a bench spot should not be the way around either.
 
-    Two duties, and they belong to whatever traverses a SHARED gantry, this method
-    included. Refuse while a transfer is in progress, because only the handler
-    knows what it is carrying: tips on a head, or a plate in its jaws. Lift every
-    populated mount before travelling,
-    because that one carriage holds them all and a mount left low is dragged
-    across whatever stands in the way. A handler whose gripper moves on its own
-    arm carries neither duty here."""
+    Refuse while a transfer is in progress, because only the handler knows what it
+    is carrying: tips on a head, or a plate in its jaws. Every head is lifted
+    before the gantry travels, as before any command that moves it in X or Y
+    (`head_retract`)."""
 
     interfaces: ClassVar[frozenset[str]] = frozenset({"IGantryParking"})
 
     @external
     @abstractmethod
-    @command_timing(typical=5.0, max=30.0)
+    @command_timing(typical=3.0, max=30.0)
     async def park_gantry(self, request: ParkGantryRequest) -> None:
         """Move clear of the deck. MOVES THE DEVICE.
 
@@ -1222,7 +1280,7 @@ class IGantryParkingDriver(ABC):
         ...
 
 
-class IGripperPositionDriver(ABC):
+class IGripperPositionDriver(DriverHooks, ABC):
     """Report where the gripper is and jog it from there. Hamilton iSWAP, Brooks PreciseFlex.
 
     Split from IGripperMotion (see there): a jog is computed from the current position, so both
@@ -1233,6 +1291,7 @@ class IGripperPositionDriver(ABC):
 
     @external
     @abstractmethod
+    @simulator_does_not_wait
     @command_timing(typical=1.0, max=5.0)
     async def get_gripper_position(self, request: GetGripperPositionRequest) -> GripperPosition:
         """Read the gripper's current deck-frame position."""
@@ -1240,13 +1299,13 @@ class IGripperPositionDriver(ABC):
 
     @external
     @abstractmethod
-    @command_timing(typical=5.0, max=30.0)
+    @command_timing(typical=3.0, max=30.0)
     async def move_gripper_relative(self, request: MoveGripperRelativeRequest) -> None:
         """Jog the gripper by a delta on each supplied axis."""
         ...
 
 
-class IForceGripperJawDriver(ABC):
+class IForceGripperJawDriver(DriverHooks, ABC):
     """Force-controlled gripper jaw: close until a grip force is reached. Opentrons Flex.
 
     Split from IWidthGripperJaw so a force gripper never exposes a width command it
@@ -1271,7 +1330,7 @@ class IForceGripperJawDriver(ABC):
         ...
 
 
-class IWidthGripperJawDriver(ABC):
+class IWidthGripperJawDriver(DriverHooks, ABC):
     """Width-controlled gripper jaw: drive the jaw to an opening width and read it.
     Hamilton iSWAP, Brooks PreciseFlex.
 
@@ -1289,13 +1348,15 @@ class IWidthGripperJawDriver(ABC):
 
     @external
     @abstractmethod
+    @simulator_does_not_wait
     @command_timing(typical=1.0, max=5.0)
+    @returns(JawWidthResponse)
     async def get_jaw_width(self, request: GetJawWidthRequest) -> float:
         """Read the current jaw opening (mm)."""
         ...
 
 
-class IGripperRotationDriver(ABC):
+class IGripperRotationDriver(DriverHooks, ABC):
     """Rotate the gripper about its vertical axis. Hamilton iSWAP.
 
     Only for grippers with a rotation drive; a Cartesian gripper (Opentrons Flex)
@@ -1305,14 +1366,16 @@ class IGripperRotationDriver(ABC):
 
     @external
     @abstractmethod
-    @command_timing(typical=5.0, max=30.0)
+    @command_timing(typical=3.0, max=30.0)
     async def rotate_gripper(self, request: RotateGripperRequest) -> None:
         """Rotate the gripper to the requested angle (degrees)."""
         ...
 
     @external
     @abstractmethod
+    @simulator_does_not_wait
     @command_timing(typical=1.0, max=5.0)
+    @returns(GripperRotationResponse)
     async def get_gripper_rotation(self, request: GetGripperRotationRequest) -> float:
         """Read the gripper's current rotation (degrees)."""
         ...

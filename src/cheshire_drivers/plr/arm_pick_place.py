@@ -15,18 +15,19 @@ place as the parameters that describe them.
 
 from contextlib import AbstractAsyncContextManager
 from math import cos, hypot, radians, sin
-from typing import Awaitable, Dict, Protocol
+from typing import Awaitable, Callable, Dict, Protocol
 
 from pylabrobot.brooks.precise_flex import Axis, ElbowOrientation, WorkEnvelope
 from pylabrobot.resources import Coordinate
 
-from cheshire_drivers.move_parameters import MoveParameters
+from cheshire_drivers.move_parameters import MoveParameters, out_of_the_nest, over_the_labware
 
 
 class ArmMotion(Protocol):
     """The arm primitives a composed pick or place is built from."""
 
-    closed_gripper_position: float
+    @property
+    def closed_gripper_position(self) -> float: ...
 
     @property
     def gripper_joint_range(self) -> tuple[float | None, float | None]: ...
@@ -54,6 +55,10 @@ class ArmMotion(Protocol):
     async def request_joint_position(self) -> Dict[int, float]: ...
 
 
+GripListener = Callable[[], Awaitable[None]]
+"""Called once the jaws hold the labware (pick) or have let go of it (place)."""
+
+
 class UnreachableTargetError(RuntimeError):
     """A pick or place the arm cannot complete, refused before it starts moving."""
 
@@ -71,35 +76,6 @@ def back_off(location: Coordinate, direction: float, mm: float) -> Coordinate:
     """Straight back along the approach direction, the way a shelf is entered and left."""
     yaw = radians(direction)
     return Coordinate(location.x - mm * cos(yaw), location.y - mm * sin(yaw), location.z)
-
-
-def out_of_the_nest(handling: MoveParameters) -> float:
-    """How far a leg with the labware IN the jaws travels off the grip point.
-
-    What it has to clear is the site: the lip of the pad or the wall of the pocket
-    the labware sits in. `grasp_offset` is how deep that is, and the labware's own
-    height has no part in it, because the labware is held above the lip either way.
-    The same pad has the same lip whether a tip box or a microplate is on it.
-
-    A pick rises by this carrying the labware out; a place descends from it
-    carrying the labware in.
-    """
-    return handling.grasp_offset + handling.travel_margin
-
-
-def over_the_labware(handling: MoveParameters) -> float:
-    """How far a leg with EMPTY jaws travels off the grip point.
-
-    What it has to clear is the labware standing at the site, because empty jaws
-    are down at the grip point beside it and the next thing they do is travel
-    sideways. That is true arriving to pick one up and true leaving after setting
-    one down: the obstacle is the same object either way, and it is the same height
-    whether the arm is about to grip it or has just let go of it.
-
-    Leaving after a place by the nest's depth instead is how the arm clears the pad
-    and then drives through the box it just put on it.
-    """
-    return handling.resource_height + handling.travel_margin
 
 
 def highest_lift(handling: MoveParameters) -> float:
@@ -168,6 +144,7 @@ class ArmPickPlace:
         envelope: WorkEnvelope | None = None,
         finger_speed_pct: float = 50.0,
         grasp_force: float = 10.0,
+        on_grip: GripListener | None = None,
     ) -> None:
         """Open, reach in, close on the labware, and lift it clear of what held it.
 
@@ -200,6 +177,8 @@ class ArmPickPlace:
                     location, direction, handling, orientation, over_the_labware(handling)
                 )
                 raise
+            if on_grip is not None:
+                await on_grip()
             await self._back_out(
                 location, direction, handling, orientation, out_of_the_nest(handling)
             )
@@ -211,6 +190,7 @@ class ArmPickPlace:
         handling: MoveParameters,
         orientation: ElbowOrientation | None = None,
         envelope: WorkEnvelope | None = None,
+        on_grip: GripListener | None = None,
     ) -> None:
         """Reach in with the labware, let go, and lift the fingers off it.
 
@@ -224,6 +204,8 @@ class ArmPickPlace:
                 location, direction, handling, orientation, out_of_the_nest(handling)
             )
             await self._release(handling.jaw_opening)
+            if on_grip is not None:
+                await on_grip()
             await self._back_out(
                 location, direction, handling, orientation, over_the_labware(handling)
             )

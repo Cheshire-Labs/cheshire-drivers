@@ -1,6 +1,7 @@
 import asyncio
+import inspect
 import logging
-from collections.abc import Mapping, Sequence
+from collections.abc import Awaitable, Mapping, Sequence
 from typing import Any, Callable, ClassVar, Dict, List, Optional, Protocol, runtime_checkable
 
 from cheshire_drivers.plr_tip_tracker import LenientTipTracker
@@ -24,11 +25,18 @@ from cheshire_drivers.driver_introspection import (
     resolve_vendor_object,
     vendor_surfaces,
 )
+from cheshire_drivers.driver_errors import (
+    DriverRejectedError, asks_the_instrument_nothing, before_the_instrument_is_asked,
+)
+from cheshire_drivers.driver_hooks import DriverHooks, hook_bound
+from cheshire_drivers.head_retract import RetractsHeadsBeforeTravel
 from cheshire_drivers.interrupted_move import InterruptedMoveTracking
 from cheshire_drivers.reader_models import ReadRequest
 from cheshire_drivers.labware_interfaces import IPlate, ITipRack, ITipSpot, IWell
+from cheshire_drivers.default_grip import GripsAStandIn, default_grip_labware
 from cheshire_drivers.liquid_handler_models import (
     AspirateRequest, Aspirate96Request,
+    ChannelError,
     DeckLayoutConfig, DeckResourceConfig, DeckResourceState,
     DeckStateResponse,
     DiscardTipsRequest,
@@ -109,6 +117,8 @@ from pylabrobot.legacy.liquid_handling.standard import Mix as PLRMix
 from pylabrobot.resources.carrier import Carrier as PLRCarrier
 from pylabrobot.resources.container import Container as PLRContainer
 from pylabrobot.resources.deck import Deck as PLRDeck
+from pylabrobot.resources.errors import HasTipError as PLRHasTipError
+from pylabrobot.resources.errors import NoTipError as PLRNoTipError
 from pylabrobot.resources.errors import ResourceNotFoundError as PLRResourceNotFoundError
 from pylabrobot.resources.itemized_resource import ItemizedResource as PLRItemizedResource
 from pylabrobot.resources.plate import Plate as PLRPlate
@@ -173,7 +183,7 @@ from pylabrobot.resources import Coordinate
 from pylabrobot.resources.resource import Resource as PLRResource
 
 
-class VendorSurfaceForwarding:
+class VendorSurfaceForwarding(DriverHooks):
     """Forward a vendor command to the object the driver declared it on.
 
     The vendor object's own surface lives on an attribute, not on the driver; a
@@ -184,7 +194,8 @@ class VendorSurfaceForwarding:
     forwarded (which also stops ``_backend`` recursing during construction).
 
     A prefixed name says which surface it came from: ``gripper.ungrip`` resolves
-    against the surface declared with prefix ``gripper``.
+    against the surface declared with prefix ``gripper``. A vendor coroutine comes
+    back wrapped by the command hook, so it is reported like any other command.
     """
 
     def __getattr__(self, name: str) -> Any:
@@ -196,12 +207,15 @@ class VendorSurfaceForwarding:
                 continue
             vendor = resolve_vendor_object(self, surface)
             try:
-                return getattr(vendor, member)
+                found = getattr(vendor, member)
             except AttributeError as exc:
                 raise AttributeError(
                     f"{type(self).__name__} has no {name!r}, and neither does "
                     f"its {type(vendor).__name__} at {surface.path!r}."
                 ) from exc
+            if inspect.iscoroutinefunction(found):
+                return hook_bound(self, name, found)
+            return found
         where = (
             f"named {prefix!r}" if prefix else "to forward an unprefixed name to"
         )
@@ -726,8 +740,8 @@ def slot_names_for_deck_type(deck_type: str) -> list[str] | None:
     """Placeable slot names of a slot-based deck (Opentrons Flex "A1".."D3" or OT-2 "1".."11"), or
     ``None`` for a rail deck (Hamilton) or an unknown type. The trash slot is excluded.
 
-    Single-sourced from the PLR deck the factory builds, so orca-core's deck-site enumeration and
-    this driver's placement agree on the slot names without a hand-copied list.
+    Single-sourced from the PLR deck the factory builds, so ``deck_site_units`` and this driver's
+    placement agree on the slot names without a hand-copied list.
     """
     factory = _deck_factories().get(deck_type)
     if factory is None:
@@ -811,8 +825,27 @@ def _per_channel_mix(parameters: PipettingParameters, channels: int) -> list[PLR
     return [mix] * channels
 
 
+# PyLabRobot's own grip depth below the labware top when a move names none, read off its signatures.
+_PLR_PLATE_GRIP_FROM_TOP_MM: float = inspect.signature(PLRLiquidHandler.move_plate).parameters["pickup_distance_from_top"].default
+_PLR_RESOURCE_GRIP_FROM_TOP_MM: float = inspect.signature(PLRLiquidHandler.move_resource).parameters["pickup_distance_from_top"].default
+
+
+
+async def _past_the_tip_check(call: Awaitable[None]) -> None:
+    """Run a PyLabRobot liquid or 96-head call.
+
+    PyLabRobot checks the head's tips before it calls the backend and raises that check bare. A backend's own
+    tip trouble arrives inside a ChannelizedError or as a firmware error, so a bare one means nothing moved.
+    """
+    try:
+        await call
+    except (PLRHasTipError, PLRNoTipError) as refused:
+        with before_the_instrument_is_asked():
+            raise refused
+
+
 class PLRLiquidHandlerWrapper(
-    VendorSurfaceForwarding, InterruptedMoveTracking, ILiquidHandlerDriver,
+    RetractsHeadsBeforeTravel, VendorSurfaceForwarding, InterruptedMoveTracking, GripsAStandIn, ILiquidHandlerDriver,
 ):
     """Unified PLR liquid handler driver. Implements ILiquidHandlerDriver
     (string-based, serializable). Same interface for local and remote.
@@ -847,6 +880,11 @@ class PLRLiquidHandlerWrapper(
         self._lh: PLRLiquidHandler | None = None
         self._visualize = visualize
         self._visualizer: Visualizer | None = None
+
+    async def _retract_heads(self, command: str) -> None:
+        # PyLabRobot has no retract every backend answers, so a backend with no driver of its own
+        # lifts only as its own moves do.
+        return None
 
     async def configure_deck(self, config: DeckLayoutConfig) -> LabwareStateResponse:
 
@@ -974,7 +1012,7 @@ class PLRLiquidHandlerWrapper(
         pieces composes them itself instead, and does not move here.
         """
         if self._lh is None:
-            raise RuntimeError("configure_deck() must be called before initialize()")
+            raise DriverRejectedError("configure_deck() must be called before initialize()")
         if self._lh.setup_finished:
             return
         await self._lh.setup()
@@ -1178,7 +1216,7 @@ class PLRLiquidHandlerWrapper(
     async def discard_stranded_tips(
         self, request: DiscardStrandedTipsRequest
     ) -> ReconcileHardwareStateResponse:
-        raise RuntimeError(
+        raise DriverRejectedError(
             f"{type(self).__name__} has no tip-presence sensor, so it cannot find a "
             "stranded tip to discard. Clear the tip at the instrument."
         )
@@ -1199,6 +1237,7 @@ class PLRLiquidHandlerWrapper(
 
     # --- 8-channel operations ---
 
+    @asks_the_instrument_nothing
     def _get_plate(self, name: str) -> PLRPlate:
         assert self._lh is not None
         resource = self._lh.deck.get_resource(name)
@@ -1206,6 +1245,7 @@ class PLRLiquidHandlerWrapper(
             raise TypeError(f"Resource '{name}' is not a Plate, got {type(resource).__name__}")
         return resource
 
+    @asks_the_instrument_nothing
     def _get_tip_rack(self, name: str) -> PLRTipRack:
         assert self._lh is not None
         resource = self._lh.deck.get_resource(name)
@@ -1213,6 +1253,7 @@ class PLRLiquidHandlerWrapper(
             raise TypeError(f"Resource '{name}' is not a TipRack, got {type(resource).__name__}")
         return resource
 
+    @asks_the_instrument_nothing
     def _resolve_op_containers(
         self, labware: str, positions: list[str] | None, n_channels: int,
     ) -> list[PLRContainer]:
@@ -1238,6 +1279,7 @@ class PLRLiquidHandlerWrapper(
             )
         return [resource.get_item(p) for p in positions]
 
+    @asks_the_instrument_nothing
     def _get_head96_resource(self, name: str) -> PLRContainer | PLRPlate:
         """Resolve a 96-head target: a Plate or a single Container (trough). PLR's
         ``aspirate96``/``dispense96`` accept either."""
@@ -1250,23 +1292,24 @@ class PLRLiquidHandlerWrapper(
         return resource
 
     async def aspirate(self, request: AspirateRequest) -> LabwareStateResponse:
-        await self._require_honorable_volumes(
-            [v for target in request.aspirations for v in target.volumes], request.use_channels
-        )
         assert self._lh is not None
         plr_wells = []
         flat_volumes: list[float] = []
-        for asp in request.aspirations:
-            plr_wells.extend(
-                self._resolve_op_containers(asp.labware, asp.positions, len(asp.volumes))
+        with before_the_instrument_is_asked():
+            await self._require_honorable_volumes(
+                [v for target in request.aspirations for v in target.volumes], request.use_channels
             )
-            flat_volumes.extend(asp.volumes)
-        n = len(plr_wells)
+            for asp in request.aspirations:
+                plr_wells.extend(
+                    self._resolve_op_containers(asp.labware, asp.positions, len(asp.volumes))
+                )
+                flat_volumes.extend(asp.volumes)
+            n = len(plr_wells)
 
-        plr_flow_rates = _per_channel_flow_rates(request.flow_rates, request.parameters, n)
-        plr_offsets = _per_channel_offsets(request.offsets_z, request.parameters, n)
-        plr_mix = _per_channel_mix(request.parameters, n)
-        plr_blow_out = _per_channel_blow_out(request.parameters, n)
+            plr_flow_rates = _per_channel_flow_rates(request.flow_rates, request.parameters, n)
+            plr_offsets = _per_channel_offsets(request.offsets_z, request.parameters, n)
+            plr_mix = _per_channel_mix(request.parameters, n)
+            plr_blow_out = _per_channel_blow_out(request.parameters, n)
 
         # Hamilton STAR raises ``ChannelizedError`` only when EVERY underlying
         # firmware error is per-channel-keyed (see STAR_backend.py
@@ -1276,9 +1319,10 @@ class PLRLiquidHandlerWrapper(
         # ERRORs but ops_history gets no per-channel attribution. Surfacing the
         # mixed case requires deeper firmware-code parsing, which this does not do.
         try:
-            await self._lh.aspirate(plr_wells, vols=flat_volumes, flow_rates=plr_flow_rates,
-                                     offsets=plr_offsets, use_channels=request.use_channels,
-                                     mix=plr_mix, blow_out_air_volume=plr_blow_out)
+            await _past_the_tip_check(self._lh.aspirate(
+                plr_wells, vols=flat_volumes, flow_rates=plr_flow_rates, offsets=plr_offsets,
+                use_channels=request.use_channels, mix=plr_mix, blow_out_air_volume=plr_blow_out,
+            ))
         except PLRChannelizedError as exc:
             return build_aspirate_partial_failure(
                 request,
@@ -1288,29 +1332,30 @@ class PLRLiquidHandlerWrapper(
         return LabwareStateResponse(success=True, labware_state=self._get_labware_state())
 
     async def dispense(self, request: DispenseRequest) -> LabwareStateResponse:
-        await self._require_honorable_volumes(
-            [v for target in request.dispenses for v in target.volumes], request.use_channels
-        )
         assert self._lh is not None
         plr_wells = []
         flat_volumes: list[float] = []
-        for disp in request.dispenses:
-            plr_wells.extend(
-                self._resolve_op_containers(disp.labware, disp.positions, len(disp.volumes))
+        with before_the_instrument_is_asked():
+            await self._require_honorable_volumes(
+                [v for target in request.dispenses for v in target.volumes], request.use_channels
             )
-            flat_volumes.extend(disp.volumes)
-        n = len(plr_wells)
+            for disp in request.dispenses:
+                plr_wells.extend(
+                    self._resolve_op_containers(disp.labware, disp.positions, len(disp.volumes))
+                )
+                flat_volumes.extend(disp.volumes)
+            n = len(plr_wells)
 
-        plr_flow_rates = _per_channel_flow_rates(request.flow_rates, request.parameters, n)
-        plr_offsets = _per_channel_offsets(request.offsets_z, request.parameters, n)
-        plr_mix = _per_channel_mix(request.parameters, n)
-
-        plr_blow_out = _per_channel_blow_out(request.parameters, n)
+            plr_flow_rates = _per_channel_flow_rates(request.flow_rates, request.parameters, n)
+            plr_offsets = _per_channel_offsets(request.offsets_z, request.parameters, n)
+            plr_mix = _per_channel_mix(request.parameters, n)
+            plr_blow_out = _per_channel_blow_out(request.parameters, n)
 
         try:
-            await self._lh.dispense(plr_wells, vols=flat_volumes, flow_rates=plr_flow_rates,
-                                     offsets=plr_offsets, use_channels=request.use_channels,
-                                     mix=plr_mix, blow_out_air_volume=plr_blow_out)
+            await _past_the_tip_check(self._lh.dispense(
+                plr_wells, vols=flat_volumes, flow_rates=plr_flow_rates, offsets=plr_offsets,
+                use_channels=request.use_channels, mix=plr_mix, blow_out_air_volume=plr_blow_out,
+            ))
         except PLRChannelizedError as exc:
             return build_dispense_partial_failure(
                 request,
@@ -1320,56 +1365,117 @@ class PLRLiquidHandlerWrapper(
         return LabwareStateResponse(success=True, labware_state=self._get_labware_state())
 
     async def pick_up_tips(self, request: PickUpTipsRequest) -> LabwareStateResponse:
-        # TODO: pick_up_tips, drop_tips, and 96-head ops
-        # also raise ``ChannelizedError`` per
-        # ``pylabrobot/legacy/liquid_handling/errors.py``. Per-channel partial-failure
-        # translation for tip ops is deferred until the aspirate/dispense
-        # contract has settled; today's tip-op exception path is unchanged.
         assert self._lh is not None
-        spots = []
-        for pick in request.picks:
-            rack = self._get_tip_rack(pick.tip_rack)
-            for pos in pick.positions:
-                spots.append(rack.get_item(pos))
-        await self._lh.pick_up_tips(spots, use_channels=request.use_channels)
+        spots: list[PLRTipSpot] = []
+        targets: list[tuple[str, str | None]] = []
+        with before_the_instrument_is_asked():
+            for pick in request.picks:
+                rack = self._get_tip_rack(pick.tip_rack)
+                for pos in pick.positions:
+                    spots.append(rack.get_item(pos))
+                    targets.append((pick.tip_rack, pos))
+        held_before = self._held_by_channel()
+        failure: Exception | None = None
+        try:
+            await self._lh.pick_up_tips(spots, use_channels=request.use_channels)
+        except Exception as exc:
+            failure = exc
         # Tip volume trackers default to PLR's strict VolumeTracker; with
         # tracking now globally enabled, a workflow that aspirates beyond
         # the tip's `maximal_volume` would raise. Swap the just-mounted
         # tips' trackers to lenient for the same audit-not-enforce reason
         # the well trackers were swapped at configure_deck time.
         self._swap_mounted_tip_trackers_to_lenient(self._lh.head, request.use_channels)
+        if failure is not None:
+            return self._channels_that_did_not_go(failure, request.use_channels, targets, held_before)
         return LabwareStateResponse(success=True, labware_state=self._get_labware_state())
+
+    def _held_by_channel(self) -> list[bool]:
+        assert self._lh is not None
+        return [self._lh.head[channel].has_tip for channel in range(self._lh.backend.num_channels)]
+
+    def _channels_that_did_not_go(
+        self,
+        failure: Exception,
+        use_channels: list[int] | None,
+        targets: list[tuple[str, str | None]],
+        held_before: list[bool],
+    ) -> LabwareStateResponse:
+        """The channels a tip command left as they were, read off PLR's head after it committed the ones that went.
+
+        Re-raises when no channel went, and on PLR's own tip check, which fails before the robot is asked.
+        """
+        assert self._lh is not None
+        if isinstance(failure, (PLRHasTipError, PLRNoTipError)):
+            with before_the_instrument_is_asked():
+                raise failure
+        channels = use_channels or list(range(len(targets)))
+        missed = [
+            (channel, target) for channel, target in zip(channels, targets)
+            if self._lh.head[channel].has_tip is held_before[channel]
+        ]
+        if not missed or len(missed) == len(targets):
+            raise failure
+        per_channel = failure.errors if isinstance(failure, PLRChannelizedError) else {}
+        errors: list[ChannelError] = []
+        for channel, (labware, position) in missed:
+            cause = per_channel.get(channel, failure)
+            errors.append(ChannelError(
+                channel_id=channel, well_position=position, labware=labware,
+                attempted_volume=0.0, error_code=type(cause).__name__, error_message=str(cause),
+            ))
+        return LabwareStateResponse(
+            success=False, labware_state=self._get_labware_state(), per_channel_errors=errors,
+        )
 
     async def drop_tips(self, request: DropTipsRequest) -> LabwareStateResponse:
         assert self._lh is not None
         if request.to_waste:
-            # One trash resource is one tip_spot, so PLR read it as "channel 0
-            # only": a waste drop binned that channel's tip and left every other
-            # one mounted. `discard_tips` takes the channels instead, and with
-            # none named it empties every channel holding a tip.
-            await self._lh.discard_tips(
-                use_channels=request.use_channels, allow_nonzero_volume=True,
-            )
-        else:
+            # PLR reads one trash as one tip spot, so drop_tips would bin channel 0 only; discard_tips takes channels.
+            return await self._tips_to_waste(request.use_channels)
+        targets: list[tuple[str, str | None]] = []
+        failure: Exception | None = None
+        held_before = self._held_by_channel()
+        spots: list[PLRTipSpot] = []
+        with before_the_instrument_is_asked():
             if request.drops is None:
                 raise ValueError("drops required when to_waste=False")
-            spots = []
             for drop in request.drops:
                 rack = self._get_tip_rack(drop.tip_rack)
                 for pos in drop.positions:
                     spots.append(rack.get_item(pos))
+                    targets.append((drop.tip_rack, pos))
+        try:
             await self._lh.drop_tips(
                 spots, use_channels=request.use_channels, allow_nonzero_volume=True,
             )
+        except Exception as exc:
+            failure = exc
+        if failure is not None:
+            return self._channels_that_did_not_go(failure, request.use_channels, targets, held_before)
         return LabwareStateResponse(success=True, labware_state=self._get_labware_state())
 
     async def discard_tips(self, request: DiscardTipsRequest) -> LabwareStateResponse:
+        return await self._tips_to_waste(request.use_channels)
+
+    async def _tips_to_waste(self, use_channels: list[int] | None) -> LabwareStateResponse:
+        """Bin the named channels' tips, or every tip with none named; only named channels are reported one by one."""
         assert self._lh is not None
-        await self._lh.discard_tips(
-            use_channels=request.use_channels, allow_nonzero_volume=True,
-        )
+        with before_the_instrument_is_asked():
+            trash = self._lh.deck.get_trash_area()
+        held_before = self._held_by_channel()
+        failure: Exception | None = None
+        try:
+            await self._lh.discard_tips(use_channels=use_channels, allow_nonzero_volume=True)
+        except Exception as exc:
+            failure = exc
+        if failure is not None:
+            if not use_channels:
+                raise failure
+            return self._channels_that_did_not_go(failure, use_channels, [(trash.name, None)] * len(use_channels), held_before)
         return LabwareStateResponse(success=True, labware_state=self._get_labware_state())
 
+    @asks_the_instrument_nothing
     def _resolve_site(self, position: str) -> PLRResource:
         """A move endpoint by name: a Hamilton carrier site resolves by resource name; an Opentrons
         '<slot>-slot' label resolves to the slot holder (the two site forms share this one path)."""
@@ -1380,22 +1486,38 @@ class PLRLiquidHandlerWrapper(
         return self._lh.deck.get_resource(position)
 
     async def move_plate(self, request: MovePlateRequest) -> None:
+        if request.plate is None:
+            assert request.from_position is not None
+            stand_in = default_grip_labware(self._stand_in)
+            self._resolve_site(request.from_position).assign_child_resource(stand_in)
+            try:
+                await self._move_plate(stand_in, None, request)
+            finally:
+                stand_in.unassign()
+            return
+        assert self._lh is not None
+        with before_the_instrument_is_asked():
+            plate = self._lh.deck.get_resource(request.plate)
+        await self._move_plate(plate, request.plate, request)
+
+    async def _move_plate(self, resource: PLRResource, name: str | None, request: MovePlateRequest) -> None:
         # Plates use PLR's typed move_plate to keep its pickup_distance_from_top
         # (~9.87mm); move_resource defaults it to 0, gripping the plate top on hw.
         assert self._lh is not None
-        resource = self._lh.deck.get_resource(request.plate)
-        destination = self._resolve_site(request.to_position)
+        with before_the_instrument_is_asked():
+            destination = self._resolve_site(request.to_position)
 
-        if request.from_position is not None:
-            from_resource = self._resolve_site(request.from_position)
-            if resource.parent != from_resource:
-                if resource.parent is not None:
-                    resource.unassign()
-                from_resource.assign_child_resource(resource)
+            if request.plate is not None and request.from_position is not None:
+                from_resource = self._resolve_site(request.from_position)
+                if resource.parent != from_resource:
+                    if resource.parent is not None:
+                        resource.unassign()
+                    from_resource.assign_child_resource(resource)
 
         grip = request.grip_distance_from_top
+        plr_grip = _PLR_PLATE_GRIP_FROM_TOP_MM if isinstance(resource, PLRPlate) else _PLR_RESOURCE_GRIP_FROM_TOP_MM
         async with self._tracking_gripper_move(
-            request.plate, request.to_position, request.from_position,
+            name, request.to_position, request.from_position,
         ):
             if isinstance(resource, PLRPlate):
                 if grip is None:
@@ -1468,19 +1590,20 @@ class PLRLiquidHandlerWrapper(
         # A trough mix has no positions; channel count comes from use_channels
         # (the request validator guarantees it is present in that case).
         n = len(request.positions) if request.positions is not None else len(request.use_channels or [])
-        containers = self._resolve_op_containers(request.labware, request.positions, n)
-        plr_mix = [
-            PLRMix(
-                volume=request.volume,
-                repetitions=request.repetitions,
-                flow_rate=request.parameters.flow_rate,
-            )
-        ] * n
-        offsets = _per_channel_offsets(None, request.parameters, n)
-        await self._lh.aspirate(
+        with before_the_instrument_is_asked():
+            containers = self._resolve_op_containers(request.labware, request.positions, n)
+            plr_mix = [
+                PLRMix(
+                    volume=request.volume,
+                    repetitions=request.repetitions,
+                    flow_rate=request.parameters.flow_rate,
+                )
+            ] * n
+            offsets = _per_channel_offsets(None, request.parameters, n)
+        await _past_the_tip_check(self._lh.aspirate(
             containers, vols=[0.0] * n, mix=plr_mix, offsets=offsets,
             use_channels=request.use_channels,
-        )
+        ))
         return LabwareStateResponse(success=True, labware_state=self._get_labware_state())
 
     # --- 96-head operations ---
@@ -1488,40 +1611,42 @@ class PLRLiquidHandlerWrapper(
     async def aspirate96(self, request: Aspirate96Request) -> LabwareStateResponse:
         assert self._lh is not None
         resource = self._get_head96_resource(request.labware)
-        await self._lh.aspirate96(resource, request.volume, flow_rate=request.flow_rate, liquid_height=request.liquid_height)
+        await _past_the_tip_check(self._lh.aspirate96(
+            resource, request.volume, flow_rate=request.flow_rate, liquid_height=request.liquid_height,
+        ))
         return LabwareStateResponse(success=True, labware_state=self._get_labware_state())
 
     async def dispense96(self, request: Dispense96Request) -> LabwareStateResponse:
         assert self._lh is not None
         resource = self._get_head96_resource(request.labware)
-        await self._lh.dispense96(resource, request.volume, flow_rate=request.flow_rate, liquid_height=request.liquid_height)
+        await _past_the_tip_check(self._lh.dispense96(
+            resource, request.volume, flow_rate=request.flow_rate, liquid_height=request.liquid_height,
+        ))
         return LabwareStateResponse(success=True, labware_state=self._get_labware_state())
 
     async def pick_up_tips96(self, request: PickUpTips96Request) -> LabwareStateResponse:
         assert self._lh is not None
         rack = self._get_tip_rack(request.tip_rack)
-        await self._lh.pick_up_tips96(rack)
-        # 96-head pickup mounts a tip on every channel of the 96-head;
-        # swap each tip's volume tracker to lenient, same rationale as
-        # the 8-channel path.
+        await _past_the_tip_check(self._lh.pick_up_tips96(rack))
+        # A 96-head pickup mounts a tip on every channel; their trackers go lenient as on the 8-channel path.
         self._swap_mounted_tip_trackers_to_lenient(self._lh.head96, channels=None)
         return LabwareStateResponse(success=True, labware_state=self._get_labware_state())
 
     async def drop_tips96(self, request: DropTips96Request) -> LabwareStateResponse:
         assert self._lh is not None
-        if request.to_waste:
-            trash = self._lh.deck.get_trash_area96()
-            await self._lh.drop_tips96(resource=trash, allow_nonzero_volume=True)
-        else:
-            if request.tip_rack is None:
+        with before_the_instrument_is_asked():
+            if request.to_waste:
+                target: PLRResource = self._lh.deck.get_trash_area96()
+            elif request.tip_rack is None:
                 raise ValueError("tip_rack required when to_waste=False")
-            rack = self._get_tip_rack(request.tip_rack)
-            await self._lh.drop_tips96(resource=rack, allow_nonzero_volume=True)
+            else:
+                target = self._get_tip_rack(request.tip_rack)
+        await _past_the_tip_check(self._lh.drop_tips96(resource=target, allow_nonzero_volume=True))
         return LabwareStateResponse(success=True, labware_state=self._get_labware_state())
 
     async def return_tips96(self, request: ReturnTips96Request) -> LabwareStateResponse:
         assert self._lh is not None
-        await self._lh.return_tips96(allow_nonzero_volume=True)
+        await _past_the_tip_check(self._lh.return_tips96(allow_nonzero_volume=True))
         return LabwareStateResponse(success=True, labware_state=self._get_labware_state())
 
     # --- Internal helpers ---
@@ -1701,7 +1826,7 @@ class PLRStorageBackendWrapper(VendorSurfaceForwarding, IStorageDriver):
         return None
 
 
-class _PLRTempBackendHolder:
+class _PLRTempBackendHolder(DriverHooks):
     """Shared attribute carrier so the temp mixins agree on `_temp_backend`.
 
     Pyright flags duplicate compatible declarations of `_temp_backend` across

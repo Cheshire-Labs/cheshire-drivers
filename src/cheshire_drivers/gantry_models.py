@@ -6,6 +6,8 @@ pipette mounts), and a handler with no gripper at all can still have a gantry to
 move out of an arm's way.
 """
 
+from abc import ABC, abstractmethod
+
 from cheshire_drivers.driver_errors import DriverRefusedError
 from cheshire_drivers.liquid_handler_models import _StrictModel
 
@@ -34,14 +36,21 @@ class ParkGantryRequest(_StrictModel):
     at: GantryParkPosition | None = None
 
 
+class GantryJogRequest(_StrictModel, ABC):
+    """A jog of one head, which crosses the deck only when it moves in X or Y."""
+
+    @abstractmethod
+    def moves_in_xy(self) -> bool: ...
+
+
 class GantryBusyError(DriverRefusedError):
     """The handler will not move its gantry right now.
 
-    Raised when something is still hanging off the gantry. Tips on a head mean
-    a transfer is under way and travelling carries liquid across the deck. A
-    plate in the jaws is heavier trouble: it travels with the gantry and hits
-    whatever the plate reaches, which the bench found out. Either way the work
-    in progress wins and the caller waits rather than interrupting it.
+    Raised when something is still hanging off the gantry. A plate that may be
+    in the jaws refuses every travel: it goes with the gantry and hits whatever
+    it reaches, which the bench found out. Tips on a head refuse a park or a
+    gripper move, because no transfer needs one mid-way. Either way the work in
+    progress wins and the caller waits rather than interrupting it.
 
     Distinct from a failure, which is what ``DriverRefusedError`` carries
     upstream. Nothing is wrong, nothing was moved, and the same request will

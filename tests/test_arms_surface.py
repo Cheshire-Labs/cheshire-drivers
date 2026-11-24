@@ -19,7 +19,6 @@ _ARM_SYMBOLS = (
     "PLRTransporterBackendWrapper",
     "convert_cartesian_to_plr_coord",
     "convert_joint_to_plr_dict",
-    "transporter_driver",
 )
 
 
@@ -61,7 +60,6 @@ def test_transporter_symbols_resolve_from_plr_package() -> None:
         PreciseFlexTransporterDriver,
         convert_cartesian_to_plr_coord,
         convert_joint_to_plr_dict,
-        transporter_driver,
     )
 
     assert PLRArmBackend is not None
@@ -69,4 +67,3 @@ def test_transporter_symbols_resolve_from_plr_package() -> None:
     assert PreciseFlexTransporterDriver is not None
     assert convert_cartesian_to_plr_coord is not None
     assert convert_joint_to_plr_dict is not None
-    assert transporter_driver is not None

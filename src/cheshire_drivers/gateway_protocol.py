@@ -5,27 +5,42 @@ sides of the websocket import it from here: the on-prem agent that owns the real
 drivers, and the server (control plane) that dispatches commands to them. Keeping
 one definition in this shared package removes the per-repo copy that previously had
 to be kept byte-compatible by hand.
+
+The agent opens with a hello, the control plane sends the devices assigned to it, and
+the agent answers with an assignment result naming what it built. After that the control
+plane sends commands and cancels; the agent answers with responses, status and heartbeats.
 """
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 from typing import Literal, Optional
 
+from typing_extensions import Self
+
+from cheshire_drivers.device_setup import DeviceSetup
 from cheshire_drivers.driver_errors import InstrumentOutcome
 from cheshire_drivers.driver_introspection import MethodInfo
 
 
 # Protocol version for compatibility checking. Pinned as a Literal so a peer that
-# announces any other version fails ConnectMessage validation at the handshake.
-ProtocolVersion = Literal["1.3.0"]
-PROTOCOL_VERSION: ProtocolVersion = "1.3.0"
+# announces any other version fails ClientHello validation at the handshake.
+ProtocolVersion = Literal["1.8.0"]
+PROTOCOL_VERSION: ProtocolVersion = "1.8.0"
 
-# The run modes that reach the agent. PURE_SIM is not one of them: it runs
-# entirely in-process server-side, so the agent holds no driver for it.
-DriverMode = Literal["LIVE", "DEVICE_SIM"]
-EffectiveMode = Literal[DriverMode, "PURE_SIM"]
+# A second connection for a client ID still heartbeating. The agent keeps redialing, so a
+# lab PC recovers from a network drop once the server notices the old socket died.
+CLIENT_ID_IN_USE_CLOSE_CODE = 4409
+
+# The agent's default heartbeat interval, and its maximum. The server derives how long a quiet agent stays connected from it.
+HEARTBEAT_INTERVAL_SECONDS: float = 30.0
+
+# The run modes a lab PC's orca-client runs. A check run's orca-client runs inside the server.
+DriverMode = Literal["LIVE", "SIM"]
+# The same order as every other three-mode Literal: typing treats two orders as one cached type, so a
+# second order makes the published schema depend on which module was imported first.
+EffectiveMode = Literal["CHECK_RUN", "SIM", "LIVE"]
 
 # LIVE first: an observer needs the instrument's answer ahead of a simulator's.
-_OBSERVER_PRIORITY: tuple[DriverMode, ...] = ("LIVE", "DEVICE_SIM")
+_OBSERVER_PRIORITY: tuple[DriverMode, ...] = ("LIVE", "SIM")
 
 
 __all__ = [
@@ -34,8 +49,12 @@ __all__ = [
     "ProtocolVersion",
     "MethodInfo",
     "DeviceConnectInfo",
-    "LabwareDefinitionDTO",
-    "ConnectMessage",
+    "CLIENT_ID_IN_USE_CLOSE_CODE",
+    "HEARTBEAT_INTERVAL_SECONDS",
+    "ClientHello",
+    "AssignedDevice",
+    "DeviceAssignment",
+    "AssignmentResult",
     "CommandMessage",
     "CancelMessage",
     "ResponseMessage",
@@ -50,63 +69,10 @@ __all__ = [
 ]
 
 
-class LabwareDefinitionDTO(BaseModel):
-    """Wire shape for a single labware-catalog row.
-
-    Carries one catalog row across the wire so the agent can build a PLR Resource
-    from server-sourced geometry instead of re-resolving against its own local
-    catalog. The agent picks one of two resolution paths off this DTO:
-
-    * **PLR-registered labware**: ``plr_class_name`` set -> instantiate the named
-      PLR factory directly (``pylabrobot.resources.<plr_class_name>(name=...)``).
-    * **Custom labware**: ``plr_class_name`` None -> hand ``geometry`` to
-      ``cheshire_drivers.plr.labware_converter.PLRLabwareConverter`` which
-      reconstructs a PLR Resource from the protocol-typed geometry blob. The
-      geometry dict is the ``model_dump`` of a
-      ``cheshire_drivers.labware_seed.LabwareSeedEntry`` subclass and so already
-      satisfies the ``_HasPlateGeometry`` / ``_HasWellGeometry`` protocols the
-      converter consumes.
-    """
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    labware_type: str = Field(..., description="Catalog primary key, e.g. 'Cor_96_wellplate_360ul_Fb'")
-    display_name: str = Field(..., description="Operator-visible label")
-    category: Literal["plate", "tip_rack", "trough", "tube", "carrier"] = Field(
-        ...,
-        description="Top-level catalog category; selects the custom-labware reconstruction branch",
-    )
-    vendor: Optional[str] = Field(default=None, description="Vendor, when known")
-    plr_class_name: Optional[str] = Field(
-        default=None,
-        description=(
-            "When set, the agent instantiates this name from pylabrobot.resources "
-            "directly (PLR-registered labware). When None, the agent reconstructs "
-            "the Resource from `geometry` via PLRLabwareConverter (custom labware)."
-        ),
-    )
-    geometry: dict[str, JsonValue] = Field(
-        ...,
-        description=(
-            "Full geometry blob shaped to satisfy _HasPlateGeometry / "
-            "_HasWellGeometry. Sourced from the catalog row's `geometry` column, "
-            "which is the model_dump of a cheshire_drivers.labware_seed entry."
-        ),
-    )
-    source: Literal["plr_seed", "operator_custom"] = Field(
-        ...,
-        description="Origin of the row: bundled PLR-derived seed vs operator-authored",
-    )
-
-
 class DeviceConnectInfo(BaseModel):
-    """Per-device handshake metadata.
+    """What an agent built for one assigned device.
 
-    One entry per device the agent controls. ``name`` is the operator-visible
-    identifier used as the binding key against the topology declaration: an agent
-    device with ``name="shaker_1"`` binds to a topology ``Shaker(name="shaker_1")``.
-    Also carries the kind label, the abstract interfaces this driver implements (the
-    safety contract checked at connect time), the auto-derived vendor-specific extras
+    Carries the kind label, the abstract interfaces this driver implements, the auto-derived vendor-specific extras
     the concrete driver supports beyond its declared interfaces, the LH-specific
     provides_state flag, and the full method-info dict for the operator-facing
     introspection endpoint.
@@ -114,7 +80,7 @@ class DeviceConnectInfo(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    name: str = Field(..., description="Operator-visible device name (binding key against topology)")
+    name: str = Field(..., description="The topology's name for this device")
     type: str = Field(..., description="Device kind label (e.g. 'shaker', 'liquid_handler')")
     interfaces: frozenset[str] = Field(
         ...,
@@ -134,43 +100,47 @@ class DeviceConnectInfo(BaseModel):
     )
 
 
-class ConnectMessage(BaseModel):
-    """Sent by the agent when connecting to the control plane.
+class ClientHello(BaseModel):
+    """First message from an agent. It lists no devices: the control plane assigns them."""
 
-    The agent provides a list of devices it can control, along with organizational
-    hierarchy metadata. Authentication is handled via the X-API-Key HTTP header
-    during the WebSocket handshake.
-    """
-    model_config = ConfigDict(
-        extra="forbid",
-        json_schema_extra={
-            "example": {
-                "protocol_version": "1.3.0",
-                "site": "boston",
-                "lab": "molbio",
-                "workcell": None,
-                "devices": [
-                    {
-                        "name": "shaker_1",
-                        "type": "shaker",
-                        "interfaces": ["IShaker"],
-                        "capabilities": [],
-                        "provides_state": False,
-                        "methods": {},
-                    },
-                ],
-            }
-        },
-    )
+    model_config = ConfigDict(extra="forbid")
 
     protocol_version: ProtocolVersion = PROTOCOL_VERSION
+    client_id: str = Field(..., description="Matches `client` in each devices/<name>.json this agent runs")
     site: str = Field(..., description="Geographic site location (e.g., 'boston', 'cambridge')")
     lab: str = Field(..., description="Lab or workcell name within site (e.g., 'molbio', 'cellculture')")
     workcell: Optional[str] = Field(default=None, description="Optional workcell identifier for standalone device setups")
-    devices: list[DeviceConnectInfo] = Field(
-        ...,
-        description="List of available devices with full handshake metadata",
-    )
+
+
+class AssignedDevice(BaseModel):
+    """One device an agent must run. The setup is the whole of what the agent knows about it."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    name: str
+    kind: str = Field(..., description="Device kind label (e.g. 'shaker', 'liquid_handler')")
+    deck_modeling: bool = False
+    setup: DeviceSetup = Field(default_factory=DeviceSetup)
+
+
+class DeviceAssignment(BaseModel):
+    """The devices an agent must run, from the last successful build. Replaces any earlier assignment."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    assignment_id: str = Field(..., description="Names this assignment. The agent's result echoes it.")
+    devices: list[AssignedDevice]
+
+
+class AssignmentResult(BaseModel):
+    """What the agent built from an assignment. A device that failed to build is in `errors`, by name."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    assignment_id: str = Field(..., description="The assignment this result answers. The server ignores a result for an older one.")
+    devices: list[DeviceConnectInfo]
+    errors: dict[str, str] = Field(default_factory=dict)
+    error: str | None = Field(default=None, description="Why the whole assignment failed. `devices` is then what the agent still holds.")
 
 
 class CommandMessage(BaseModel):
@@ -179,8 +149,8 @@ class CommandMessage(BaseModel):
     The server sends commands to control specific devices. The command_id is used
     to match responses. The ``effective_mode`` is the per-dispatch run-mode resolved
     by the server; the agent uses it to pick between its configured live backend
-    (LIVE) and a cheshire-drivers Sim* class (DEVICE_SIM). PURE_SIM should never
-    reach the wire; the agent treats PURE_SIM as a hard error.
+    (LIVE) and a cheshire-drivers Sim* class (SIM). CHECK_RUN goes only to a
+    check run's orca-client inside the server; a lab PC's orca-client refuses it.
     """
     model_config = ConfigDict(
         extra="forbid",
@@ -209,18 +179,29 @@ class CommandMessage(BaseModel):
         ...,
         description=(
             "Per-dispatch run-mode resolved by the server. The agent routes LIVE "
-            "to the configured backend and DEVICE_SIM to the matching Sim* class. "
-            "PURE_SIM is rejected: that mode runs entirely in-process server-side "
-            "and should never reach the wire."
+            "to the configured backend and SIM to the matching Sim* class. "
+            "CHECK_RUN goes only to a check run's orca-client inside the server; "
+            "a lab PC's orca-client refuses it."
         ),
     )
-    labware: Optional[LabwareDefinitionDTO] = Field(
+    sim_speedup: Optional[float] = Field(
         default=None,
+        gt=0,
         description=(
-            "Catalog row for the labware this command operates on. Populated by the "
-            "server from its labware catalog when the caller passes a labware type. "
-            "When None, the agent falls back to its legacy resolution path so older "
-            "servers that pre-date the labware envelope keep working."
+            "How many times faster than real time a SIM command runs, from "
+            "the run's own pacer: 1 is real time. None on LIVE, when the dispatch "
+            "has no run pacer, and when the run does not wait at all. A sim spends "
+            "its motion at this speed-up; a change mid-command reaches the next command."
+        ),
+    )
+    nominal_seconds: Optional[float] = Field(
+        default=None,
+        ge=0,
+        description=(
+            "Simulated seconds the host budgets for this command, from the same rule the "
+            "engine paces it by, sent on every command. A sim spends its motion within it, "
+            "including a sim standing in for hardware on LIVE; real hardware ignores it. "
+            "None when the command has no budget (a vendor extra)."
         ),
     )
 
@@ -358,9 +339,8 @@ class DeviceStatusInfo(BaseModel):
       a command in that mode or is reporting on that world specifically, looks
       that mode up.
     * A reader that holds no wire mode, which is every registry read, must NOT
-      resolve one. Resolving an ambient run mode on a read path yields PURE_SIM
-      whenever nothing seeded it, and PURE_SIM is not a key here, so the lookup
-      misses and a healthy instrument reports as disconnected. Such a reader
+      resolve one: a mode that is not a key here misses, and a healthy
+      instrument reports as disconnected. Such a reader
       takes :attr:`observed_link`, or carries the whole map through to its own
       caller. It must never invent a collapse of its own: there are several
       consumers and each naive rule is wrong somewhere.
@@ -402,7 +382,7 @@ class DeviceStatusInfo(BaseModel):
         Show the mode alongside. A tie means both worlds are open and nothing
         here can know which one the next command takes, so the label is the
         whole mitigation, in both directions: without it an operator reads an
-        open DEVICE_SIM link as the instrument, or an open LIVE link as the
+        open SIM link as the instrument, or an open LIVE link as the
         simulator every one of their commands is actually reaching.
         """
         present: list[tuple[DriverMode, DeviceLinkInfo]] = [
@@ -433,7 +413,7 @@ class StatusMessage(BaseModel):
                         "status": "ready",
                         "links": {
                             "LIVE": {"is_connected": True, "is_initialized": True},
-                            "DEVICE_SIM": {"is_connected": False, "is_initialized": False},
+                            "SIM": {"is_connected": False, "is_initialized": False},
                         },
                     },
                     "centrifuge_1": {
@@ -495,46 +475,65 @@ class MessageEnvelope(BaseModel):
         },
     )
 
-    type: Literal["connect", "command", "cancel", "response", "status", "heartbeat"] = Field(
+    type: Literal["hello", "assignment", "assignment_result", "command", "cancel", "response", "status", "heartbeat"] = Field(
         ...,
         description="Message type discriminator"
     )
     payload: dict[str, JsonValue] = Field(..., description="Message payload")
 
     @classmethod
-    def wrap_connect(cls, message: ConnectMessage) -> "MessageEnvelope":
-        """Wrap a ConnectMessage in an envelope."""
-        return cls(type="connect", payload=message.model_dump(mode="json"))
+    def wrap_hello(cls, message: ClientHello) -> Self:
+        """Wrap a ClientHello in an envelope."""
+        return cls(type="hello", payload=message.model_dump(mode="json"))
 
     @classmethod
-    def wrap_command(cls, message: CommandMessage) -> "MessageEnvelope":
+    def wrap_assignment(cls, message: DeviceAssignment) -> Self:
+        """Wrap a DeviceAssignment in an envelope."""
+        return cls(type="assignment", payload=message.model_dump(mode="json"))
+
+    @classmethod
+    def wrap_assignment_result(cls, message: AssignmentResult) -> Self:
+        """Wrap an AssignmentResult in an envelope."""
+        return cls(type="assignment_result", payload=message.model_dump(mode="json"))
+
+    @classmethod
+    def wrap_command(cls, message: CommandMessage) -> Self:
         """Wrap a CommandMessage in an envelope."""
         return cls(type="command", payload=message.model_dump(mode="json"))
 
     @classmethod
-    def wrap_cancel(cls, message: CancelMessage) -> "MessageEnvelope":
+    def wrap_cancel(cls, message: CancelMessage) -> Self:
         """Wrap a CancelMessage in an envelope."""
         return cls(type="cancel", payload=message.model_dump(mode="json"))
 
     @classmethod
-    def wrap_response(cls, message: ResponseMessage) -> "MessageEnvelope":
+    def wrap_response(cls, message: ResponseMessage) -> Self:
         """Wrap a ResponseMessage in an envelope."""
         return cls(type="response", payload=message.model_dump(mode="json"))
 
     @classmethod
-    def wrap_status(cls, message: StatusMessage) -> "MessageEnvelope":
+    def wrap_status(cls, message: StatusMessage) -> Self:
         """Wrap a StatusMessage in an envelope."""
         return cls(type="status", payload=message.model_dump(mode="json"))
 
     @classmethod
-    def wrap_heartbeat(cls, message: HeartbeatMessage) -> "MessageEnvelope":
+    def wrap_heartbeat(cls, message: HeartbeatMessage) -> Self:
         """Wrap a HeartbeatMessage in an envelope."""
         return cls(type="heartbeat", payload=message.model_dump(mode="json"))
 
-    def unwrap(self) -> ConnectMessage | CommandMessage | CancelMessage | ResponseMessage | StatusMessage | HeartbeatMessage:
+    def unwrap(
+        self,
+    ) -> (
+        ClientHello | DeviceAssignment | AssignmentResult | CommandMessage | CancelMessage | ResponseMessage
+        | StatusMessage | HeartbeatMessage
+    ):
         """Unwrap the envelope to get the inner message."""
-        if self.type == "connect":
-            return ConnectMessage.model_validate(self.payload)
+        if self.type == "hello":
+            return ClientHello.model_validate(self.payload)
+        elif self.type == "assignment":
+            return DeviceAssignment.model_validate(self.payload)
+        elif self.type == "assignment_result":
+            return AssignmentResult.model_validate(self.payload)
         elif self.type == "command":
             return CommandMessage.model_validate(self.payload)
         elif self.type == "cancel":

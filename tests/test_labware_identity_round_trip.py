@@ -18,9 +18,9 @@ from cheshire_drivers.transporter_models import (
     PickAtCoordsRequest,
     PlaceAtCoordsRequest,
 )
-from cheshire_drivers.transporter_request_validation import (
-    wrap_transporter_payload,
-)
+from pydantic import JsonValue
+
+from cheshire_drivers.command_table import COMMANDS, DriverKwargs
 
 
 def _teachpoint(name: str) -> Teachpoint:
@@ -45,9 +45,9 @@ def _wire_dict_pick(
     teachpoint: Teachpoint,
     labware_type: str = "sample_plate",
     expected_labware: LabwareIdentity | None = None,
-) -> dict[str, object]:
+) -> dict[str, JsonValue]:
     """Mirror the gateway `RemoteTransporterDriver._coords_payload` shape."""
-    payload: dict[str, object] = {
+    payload: dict[str, JsonValue] = {
         "teachpoint": teachpoint.to_dict(),
         "labware_type": labware_type,
         "gateway_path": [],
@@ -58,6 +58,12 @@ def _wire_dict_pick(
     else:
         payload["expected_labware"] = None
     return payload
+
+
+def _wrap(command: str, params: dict[str, JsonValue]) -> DriverKwargs:
+    found = COMMANDS.find({"ITransporter"}, command)
+    assert found is not None, command
+    return found.driver_kwargs(params)
 
 
 class TestLabwareIdentityModel:
@@ -108,7 +114,7 @@ class TestPickAtCoordsRequestExpectedLabware:
 
     def test_wire_round_trip_with_identity(self) -> None:
         wire = _wire_dict_pick(_teachpoint("pad_1"), expected_labware=_identity())
-        wrapped = wrap_transporter_payload("pick_at_coords", wire)
+        wrapped = _wrap("pick_at_coords", wire)
         request = wrapped["request"]
         assert isinstance(request, PickAtCoordsRequest)
         assert request.expected_labware == _identity()
@@ -116,7 +122,7 @@ class TestPickAtCoordsRequestExpectedLabware:
 
     def test_wire_round_trip_without_identity(self) -> None:
         wire = _wire_dict_pick(_teachpoint("pad_1"), expected_labware=None)
-        wrapped = wrap_transporter_payload("pick_at_coords", wire)
+        wrapped = _wrap("pick_at_coords", wire)
         request = wrapped["request"]
         assert isinstance(request, PickAtCoordsRequest)
         assert request.expected_labware is None
@@ -129,7 +135,7 @@ class TestPickAtCoordsRequestExpectedLabware:
             "gateway_path": [],
             "handling": SEED_MOVE_PARAMETERS.model_dump(),
         }
-        wrapped = wrap_transporter_payload("pick_at_coords", wire)
+        wrapped = _wrap("pick_at_coords", wire)
         request = wrapped["request"]
         assert isinstance(request, PickAtCoordsRequest)
         assert request.expected_labware is None
@@ -143,7 +149,7 @@ class TestPickAtCoordsRequestExpectedLabware:
             "rogue": "x",
         }
         with pytest.raises(ValueError):
-            wrap_transporter_payload("pick_at_coords", wire)
+            _wrap("pick_at_coords", wire)
 
 
 class TestPlaceAtCoordsRequestExpectedLabware:
@@ -153,7 +159,7 @@ class TestPlaceAtCoordsRequestExpectedLabware:
 
     def test_wire_round_trip_with_identity(self) -> None:
         wire = _wire_dict_pick(_teachpoint("pad_2"), expected_labware=_identity())
-        wrapped = wrap_transporter_payload("place_at_coords", wire)
+        wrapped = _wrap("place_at_coords", wire)
         request = wrapped["request"]
         assert isinstance(request, PlaceAtCoordsRequest)
         assert request.expected_labware == _identity()
@@ -165,7 +171,7 @@ class TestPlaceAtCoordsRequestExpectedLabware:
             "gateway_path": [],
             "handling": SEED_MOVE_PARAMETERS.model_dump(),
         }
-        wrapped = wrap_transporter_payload("place_at_coords", wire)
+        wrapped = _wrap("place_at_coords", wire)
         request = wrapped["request"]
         assert isinstance(request, PlaceAtCoordsRequest)
         assert request.expected_labware is None

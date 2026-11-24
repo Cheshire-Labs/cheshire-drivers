@@ -1,6 +1,6 @@
 """Lifecycle wiring for a device-owned sim server on PLRLiquidHandlerWrapper.
 
-The Opentrons DEVICE_SIM path boots the vendor robot-server as a side effect of
+The Opentrons SIM path boots the vendor robot-server as a side effect of
 ``configure_deck`` and stops it on driver disposal. This pins that wiring with a
 fake sim server (no real vendor process, so it runs in CI):
 

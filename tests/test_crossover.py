@@ -1,130 +1,69 @@
-"""Tests for crossover maneuver logic in PLRTransporterBackendWrapper.
-
-These tests verify the crossover detection and maneuver sequence logic.
-The actual motion control will need validation on real hardware.
-"""
+"""A PF400 changes elbow side through its set poses; the shared arm wrapper has no poses of its own."""
 import pytest
 
 from pylabrobot.brooks.precise_flex import Axis
 
-from cheshire_drivers.teachpoints import Teachpoint, JointCoordinates, CartesianCoordinates
 from cheshire_drivers.plr import PLRTransporterBackendWrapper
+from cheshire_drivers.plr.transporter import PreciseFlexTransporterDriver
+from cheshire_drivers.plr.pf400_arm import LEFT_POSE, PF400_CROSSOVER, RIGHT_POSE, SAFE_POSE
+from cheshire_drivers.teachpoints import CartesianCoordinates, JointCoordinates, Teachpoint
+from cheshire_drivers.transporter_models import MoveToCoordsRequest
 
 from tests.arm_backend_mock import RecordingArmBackend
 
+_RIGHT_ELBOW = JointCoordinates(base=170, elbow=150)
+_LEFT_ELBOW = JointCoordinates(base=170, elbow=225)
 
-class TestCrossoverDetection:
-    """Verify crossover is detected when orientation changes."""
+
+def _joint_target(elbow: float) -> Teachpoint:
+    return Teachpoint(position_id="target", coordinates=JointCoordinates(elbow=elbow))
+
+
+class TestPF400CrossoverPoses:
+    def test_right_to_left_passes_the_safe_pose_then_the_left_pose(self):
+        assert PF400_CROSSOVER.poses(_RIGHT_ELBOW, _joint_target(220)) == (SAFE_POSE, LEFT_POSE)
+
+    def test_left_to_right_passes_the_safe_pose_then_the_right_pose(self):
+        assert PF400_CROSSOVER.poses(_LEFT_ELBOW, _joint_target(120)) == (SAFE_POSE, RIGHT_POSE)
+
+    def test_an_elbow_at_the_safe_pose_counts_as_right(self):
+        assert PF400_CROSSOVER.poses(SAFE_POSE, _joint_target(220)) == (SAFE_POSE, LEFT_POSE)
+
+    def test_the_same_side_needs_no_poses(self):
+        assert PF400_CROSSOVER.poses(_RIGHT_ELBOW, _joint_target(120)) == ()
+
+    def test_a_cartesian_target_takes_its_side_from_its_orientation(self):
+        target = Teachpoint(
+            position_id="target",
+            coordinates=CartesianCoordinates(x=100, y=0, z=0, yaw=0, pitch=0, roll=0),
+            orientation="left",
+            access_type="horizontal",
+        )
+        assert PF400_CROSSOVER.poses(_RIGHT_ELBOW, target) == (SAFE_POSE, LEFT_POSE)
+
+
+class TestTheWrapperCrossesOverOnlyWithACrossover:
+    @pytest.mark.asyncio
+    async def test_with_the_pf400_crossover_it_moves_through_its_poses_without_touching_the_jaws(self):
+        backend = RecordingArmBackend(has_rail=False, initial_joints=[0, 170, 0, 135, 0, 75])
+        wrapper = PLRTransporterBackendWrapper(backend, crossover=PF400_CROSSOVER)
+
+        await wrapper._cross_over_if_needed(_joint_target(220))
+
+        moves = [c[1] for c in backend.calls if c[0] == "move_to_joint_position"]
+        assert moves == [
+            ({Axis.RAIL: 0.0, Axis.BASE: 170.0, Axis.SHOULDER: 0.0, Axis.ELBOW: 180.0, Axis.WRIST: -180.0},),
+            ({Axis.RAIL: 0.0, Axis.BASE: 170.0, Axis.SHOULDER: -20.0, Axis.ELBOW: 240.0, Axis.WRIST: -225.0},),
+        ]
 
     @pytest.mark.asyncio
-    async def test_right_to_left_needs_crossover(self):
-        backend = RecordingArmBackend(has_rail=False, initial_joints=[0, 170, 0, 150, 0, 75])  # elbow<180 = right
-        wrapper = PLRTransporterBackendWrapper(backend)
-        tp = Teachpoint(position_id="left", coordinates=JointCoordinates(elbow=220))  # elbow>180 = left
-
-        assert await wrapper._needs_crossover(tp) is True
-
-    @pytest.mark.asyncio
-    async def test_same_orientation_no_crossover(self):
-        backend = RecordingArmBackend(has_rail=False, initial_joints=[0, 170, 0, 150, 0, 75])  # right
-        wrapper = PLRTransporterBackendWrapper(backend)
-        tp = Teachpoint(position_id="right", coordinates=JointCoordinates(elbow=120))  # also right
-
-        assert await wrapper._needs_crossover(tp) is False
-
-
-class TestCrossoverManeuverSequence:
-    """Verify crossover strategies work correctly."""
-
-    @pytest.mark.asyncio
-    async def test_default_strategy_is_2step(self):
-        """Verify default strategy is '2step'."""
+    async def test_without_one_it_moves_through_nothing(self):
         backend = RecordingArmBackend(has_rail=False, initial_joints=[0, 170, 0, 135, 0, 75])
         wrapper = PLRTransporterBackendWrapper(backend)
 
-        await wrapper._perform_crossover_maneuver()
+        await wrapper._cross_over_if_needed(_joint_target(220))
 
-        move_to_calls = [c for c in backend.calls if c[0] == 'move_to_joint_position']
-        assert len(move_to_calls) == 2
-
-    @pytest.mark.asyncio
-    async def test_6step_strategy_from_right(self):
-        """Verify '6step' strategy sequence from right config."""
-        backend = RecordingArmBackend(has_rail=False, initial_joints=[0, 170, 0, 135, 0, 75])
-        wrapper = PLRTransporterBackendWrapper(backend)
-
-        await wrapper._perform_crossover_maneuver(strategy="6step")
-
-        moves = [c[1] for c in backend.calls if c[0] == 'move_one_axis']
-        assert len(moves) == 6
-        assert moves[0] == (Axis(2), 0.0)      # shoulder to 0
-        assert moves[1] == (Axis(3), 90.0)     # elbow extend outward (right)
-        assert moves[2] == (Axis(4), 180.0)    # wrist to +180
-        assert moves[3] == (Axis(3), 135.0)    # elbow tuck (right safe)
-        assert moves[4] == (Axis(3), 180.0)    # elbow under bar
-        assert moves[5] == (Axis(3), 225.0)    # elbow exit (left safe)
-
-    @pytest.mark.asyncio
-    async def test_6step_strategy_from_left(self):
-        """Verify '6step' strategy sequence from left config."""
-        # Order: [rail, base, shoulder, elbow, wrist, gripper]
-        backend = RecordingArmBackend(has_rail=False, initial_joints=[0, 170, 0, 225, -75, 0])
-        wrapper = PLRTransporterBackendWrapper(backend)
-
-        await wrapper._perform_crossover_maneuver(strategy="6step")
-
-        moves = [c[1] for c in backend.calls if c[0] == 'move_one_axis']
-        assert len(moves) == 6
-        assert moves[0] == (Axis(2), 0.0)       # shoulder to 0
-        assert moves[1] == (Axis(3), 270.0)     # elbow extend outward (left)
-        assert moves[2] == (Axis(4), -180.0)    # wrist to -180
-        assert moves[3] == (Axis(3), 225.0)     # elbow tuck (left safe)
-        assert moves[4] == (Axis(3), 180.0)     # elbow under bar
-        assert moves[5] == (Axis(3), 135.0)     # elbow exit (right safe)
-
-    @pytest.mark.asyncio
-    async def test_2step_strategy_from_right(self):
-        """Verify '2step' strategy from right config.
-
-        Same physical targets as the old list-based wrapper: move to SafeLoc then
-        the Lefty config. Values are now carried per named Axis rather than by list
-        position, and neither pose names the gripper: a crossover is a rotation, and
-        the jaws hold whatever they were already holding.
-        """
-        backend = RecordingArmBackend(has_rail=False, initial_joints=[0, 170, 0, 135, 0, 75])
-        wrapper = PLRTransporterBackendWrapper(backend)
-
-        await wrapper._perform_crossover_maneuver(strategy="2step")
-
-        move_to_calls = [c[1] for c in backend.calls if c[0] == 'move_to_joint_position']
-        assert len(move_to_calls) == 2
-        assert move_to_calls[0] == ({
-            Axis.RAIL: 0.0, Axis.BASE: 170.0, Axis.SHOULDER: 0.0,
-            Axis.ELBOW: 180.0, Axis.WRIST: -180.0,
-        },)
-        assert move_to_calls[1] == ({
-            Axis.RAIL: 0.0, Axis.BASE: 170.0, Axis.SHOULDER: -20.0,
-            Axis.ELBOW: 240.0, Axis.WRIST: -225.0,
-        },)
-
-    @pytest.mark.asyncio
-    async def test_2step_strategy_from_left(self):
-        """Verify '2step' strategy from left config (SafeLoc then Righty)."""
-        backend = RecordingArmBackend(has_rail=False, initial_joints=[0, 170, 0, 225, 0, 50])
-        wrapper = PLRTransporterBackendWrapper(backend)
-
-        await wrapper._perform_crossover_maneuver(strategy="2step")
-
-        move_to_calls = [c[1] for c in backend.calls if c[0] == 'move_to_joint_position']
-        assert len(move_to_calls) == 2
-        assert move_to_calls[0] == ({
-            Axis.RAIL: 0.0, Axis.BASE: 170.0, Axis.SHOULDER: 0.0,
-            Axis.ELBOW: 180.0, Axis.WRIST: -180.0,
-        },)
-        assert move_to_calls[1] == ({
-            Axis.RAIL: 0.0, Axis.BASE: 170.0, Axis.SHOULDER: 10.0,
-            Axis.ELBOW: 120.0, Axis.WRIST: -130.0,
-        },)
+        assert [c for c in backend.calls if c[0] == "move_to_joint_position"] == []
 
 
 class TestTeachpointOrientation:
@@ -141,3 +80,22 @@ class TestTeachpointOrientation:
     def test_joint_no_orientation_ok(self):
         tp = Teachpoint(position_id="joint", coordinates=JointCoordinates(elbow=150))
         assert tp.orientation is None
+
+
+@pytest.mark.asyncio
+async def test_the_preciseflex_driver_crosses_over_through_the_pf400_poses(monkeypatch: pytest.MonkeyPatch):
+    driver = PreciseFlexTransporterDriver(host="127.0.0.1")
+    moves: list[dict[int, float]] = []
+
+    async def request_joint_position() -> dict[int, float]:
+        return {Axis.BASE: 170.0, Axis.SHOULDER: 0.0, Axis.ELBOW: 135.0, Axis.WRIST: 0.0, Axis.GRIPPER: 75.0}
+
+    async def move_to_joint_position(pose: dict[int, float]) -> None:
+        moves.append(pose)
+
+    monkeypatch.setattr(driver._backend, "request_joint_position", request_joint_position)
+    monkeypatch.setattr(driver._backend, "move_to_joint_position", move_to_joint_position)
+
+    await driver.move_to_coords(MoveToCoordsRequest(teachpoint=_joint_target(220)))
+
+    assert [pose[Axis.ELBOW] for pose in moves] == [SAFE_POSE.elbow, LEFT_POSE.elbow, 220.0]
