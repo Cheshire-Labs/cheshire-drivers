@@ -56,7 +56,6 @@ from cheshire_drivers.plr.transporter_wrapper import (
 
     convert_cartesian_to_plr_coord,
     convert_joint_to_plr_dict,
-    transporter_driver,
 )
 from cheshire_drivers.plr.labware import (
     PLRPlateAdapter,
@@ -101,7 +100,6 @@ __all__ = [
 
     "convert_cartesian_to_plr_coord",
     "convert_joint_to_plr_dict",
-    "transporter_driver",
     # Labware adapters
     "PLRPlateAdapter",
     "PLRWellAdapter",

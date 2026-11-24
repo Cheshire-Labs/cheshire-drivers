@@ -23,7 +23,7 @@ can reach it); the join key is `(transporter_device_id, position_id)`.
 
 from typing import Dict, List, Literal, Optional, Union
 
-from pydantic import ConfigDict, field_validator, model_validator
+from pydantic import ConfigDict, Field, field_validator, model_validator
 from typing_extensions import Self
 
 from cheshire_drivers.labware_models import LabwareIdentity
@@ -36,9 +36,8 @@ from cheshire_drivers.teachpoints import (
 )
 
 
-AxisName = Literal["rail", "base", "shoulder", "elbow", "wrist", "gripper"]
-"""Joint axis names accepted by the transporter driver. Mirrors the AxisName
-Literal exported from `cheshire_drivers.interfaces` to avoid an import cycle."""
+AxisName = str
+"""A joint name the transporter's model declares. A real driver refuses one it lacks; a sim accepts it and moves nothing."""
 
 
 class TeachpointModel(_StrictModel):
@@ -221,9 +220,6 @@ class _TeachpointCarryingRequest(_StrictModel):
     model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)
 
     teachpoint: Teachpoint
-    # Set by the external-control (ad-hoc) surface; when True the sim transporter
-    # skips ALL world validation (incl. expected_labware) and only sims motion.
-    external_control: bool = False
 
     @field_validator("teachpoint", mode="before")
     @classmethod
@@ -378,7 +374,7 @@ class SetFreeModeRequest(_StrictModel):
 
 
 class SetSpeedRequest(_StrictModel):
-    speed: float
+    speed: float = Field(..., ge=0, le=1)
 
 
 # --- Empty marker requests ---

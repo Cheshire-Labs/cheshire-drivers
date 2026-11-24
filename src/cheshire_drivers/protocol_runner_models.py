@@ -20,8 +20,8 @@ from cheshire_drivers.liquid_handler_models import _StrictModel
 class LabwareHandoffRequest(_StrictModel):
     """A labware a transporter is about to move onto or off a protocol runner, or just did."""
 
-    labware_name: str = Field(..., description="Name of the labware instance")
-    labware_type: str = Field(..., description="Labware type of the instance")
+    labware_name: str | None = Field(default=None, description="Name of the labware instance; None when none is on record")
+    labware_type: str | None = Field(default=None, description="Labware type of the instance; None when none is on record")
     site: str | None = Field(default=None, description="The runner's site the labware goes to or leaves")
     barcode: str | None = Field(default=None, description="The labware's barcode, when it has one")
 

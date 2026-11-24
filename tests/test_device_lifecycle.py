@@ -330,43 +330,21 @@ async def test_every_simulated_device_answers_the_link_the_same_way() -> None:
     assert arm.is_connected is True
 
 
-def test_every_wire_readable_property_has_somewhere_to_land() -> None:
+def test_every_readable_property_has_somewhere_to_land() -> None:
     """A readable property needs a response model with exactly one field.
 
-    The executor projects a bare bool onto the model's single field. A name in
-    the readable set with no model falls through to `EmptyCommandResponse`,
-    which has nothing to hold it, and the read fails at the last hop instead of
-    being refused up front. This guard is why the set and the models cannot
-    drift apart again.
+    The executor projects a bare bool onto the model's single field. A readable
+    property whose model has no such field fails at the last hop instead of
+    being refused up front.
     """
-    from cheshire_drivers.command_responses import EmptyCommandResponse
-    from cheshire_drivers.response_lookup import (
-        BASE_RESPONSE_MODELS,
-        WIRE_READABLE_PROPERTIES,
-    )
+    from cheshire_drivers.command_table import COMMANDS
 
-    for name in WIRE_READABLE_PROPERTIES:
-        model = BASE_RESPONSE_MODELS.get(name)
-        assert model is not None, f"{name} is readable but has no response model"
-        assert model is not EmptyCommandResponse, f"{name} projects onto nothing"
-        assert list(model.model_fields) == [name], (
-            f"{name} must land on a single field of the same name"
-        )
-
-
-def test_readable_properties_are_real_properties_on_the_contract() -> None:
-    """Guards the other direction: a name here must actually BE a property.
-
-    Listing a regular method would tell the executor to fetch it as an
-    attribute instead of calling it, and the wire would carry a bound method.
-    """
-    import inspect
-
-    from cheshire_drivers.response_lookup import WIRE_READABLE_PROPERTIES
-
-    for name in WIRE_READABLE_PROPERTIES:
-        member = inspect.getattr_static(BaseDriver, name, None)
-        assert isinstance(member, property), f"{name} is not a property on BaseDriver"
+    for interface in COMMANDS.interface_names():
+        for command in COMMANDS.commands_of(interface).values():
+            if command.is_property:
+                assert list(command.response_model.model_fields) == [command.name], (
+                    f"{interface}.{command.name} must land on a single field of the same name"
+                )
 
 
 async def _configured_liquid_handler() -> ChatterboxLiquidHandlerDriver:

@@ -30,6 +30,7 @@ from pylabrobot.resources.trough import Trough
 from pylabrobot.resources.tube import Tube
 
 from cheshire_drivers.plr import plates as cd_plates
+from cheshire_drivers.plr.opentrons_tip_racks import opentrons_tip_top_mm
 from cheshire_drivers.plr.labware import (
     PLRPlateAdapter,
     PLRTipRackAdapter,
@@ -142,6 +143,7 @@ def _tip_rack_entry(labware_type: str, rack: TipRack, vendor: str | None) -> Tip
         size_y=rack.get_size_y(),
         size_z=rack.get_size_z(),
         tip_spots=spots,
+        tip_top_z=opentrons_tip_top_mm(rack, labware_type),
     )
 
 

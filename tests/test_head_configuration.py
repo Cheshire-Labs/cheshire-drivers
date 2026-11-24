@@ -24,7 +24,7 @@ from cheshire_drivers.plr.liquid_handler import (
 )
 from cheshire_drivers.plr_wrappers import PLRLiquidHandlerWrapper
 from pylabrobot.legacy.liquid_handling.backends import OpentronsOT2Backend
-from cheshire_drivers.response_lookup import lookup_response_model
+from cheshire_drivers.command_table import COMMANDS
 
 
 class TestGangedVolumeRule:
@@ -155,6 +155,6 @@ def test_the_response_model_is_registered_for_the_wire():
     """An unregistered readback falls through to EmptyCommandResponse behind a 200 OK, silently
     discarding the payload. Nothing else in the stack catches that."""
     assert (
-        lookup_response_model("get_head_configuration", frozenset({"ILiquidHandler"}))
+        COMMANDS.response_model({"ILiquidHandler"}, "get_head_configuration")
         is HeadConfigurationResponse
     )

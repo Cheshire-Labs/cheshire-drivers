@@ -2,8 +2,11 @@ import asyncio
 import functools
 import logging
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, ClassVar, Dict, List, Literal, Optional, TypeVar, Union
+from typing import Any, ClassVar, Dict, List, Literal, Optional, Union
+
+from pydantic import BaseModel
 
 from cheshire_drivers._plr_compat import ensure_plr_stubs
 
@@ -11,8 +14,11 @@ ensure_plr_stubs()
 
 from pylabrobot.resources.resource import Resource as PLRResource
 
+from cheshire_drivers.driver_errors import rejected_before_asking
+from cheshire_drivers.driver_hooks import DriverHooks
 from cheshire_drivers.faults import FaultRegistry, FaultSpec
 from cheshire_drivers.gantry_models import ParkGantryRequest
+from cheshire_drivers.head_retract import RetractsHeadsBeforeTravel
 from cheshire_drivers.homing_models import HomeRequest
 from cheshire_drivers.labware_seed import LabwareSeedEntry, TipRackSeedEntry, load_labware_seed
 from cheshire_drivers.labware_handoff import IgnoresLabwareHandoff
@@ -26,6 +32,15 @@ from cheshire_drivers.interfaces import (
     IReaderDriver, ISealerDriver, IShakerDriver,
     IStorageDriver, ITempGettableDriver, ITempSettableDriver,
     IThermocyclerDriver, ITransporterDriver, IWasteDriver,
+)
+from cheshire_drivers.sim_motion import (
+    ForceGripperJawSimMixin,
+    GripperMotionSimMixin,
+    GripperPositionSimMixin,
+    GripperRotationSimMixin,
+    PipetteMotionSimMixin,
+    SimulatesSteps,
+    WidthGripperJawSimMixin,
 )
 from cheshire_drivers.labware_interfaces import IPlate, ITipRack, ITipSpot, IWell
 from cheshire_drivers.centrifuge_models import CentrifugeRequest
@@ -69,6 +84,7 @@ from cheshire_drivers.shaker_models import (
     UnlockPlateRequest,
 )
 from cheshire_drivers.liquid_handler_models import (
+    DEFAULT_GRIP_LABWARE,
     AspirateRequest, Aspirate96Request,
     DeckLayoutConfig,
     DeckResourceState,
@@ -128,66 +144,20 @@ from cheshire_drivers.transporter_models import (
 logger = logging.getLogger("cheshire_drivers")
 
 
-class Sim(ABC):
-    @property
-    @abstractmethod
-    def name(self) -> str: ...
-    @abstractmethod
-    async def _sim(self, message: str) -> None: ...
-
+class _FaultInjectable(DriverHooks):
     _faults: FaultRegistry
-    _faultable_methods: ClassVar[frozenset[str]] = frozenset()
+
+    async def _before_command(self, command: str, request: BaseModel | None) -> None:
+        await self._faults.before(command)
+        await super()._before_command(command, request)
 
 
-def _fault_hook(method: Any) -> Any:
-    """Wrap a sim driver's async domain method to apply pre-armed faults.
-
-    The wrapper increments the per-method call counter on entry and
-    raises/hangs if any matching ``FaultSpec`` fires. The underlying
-    method then runs unchanged. Sim state is never mutated by a fault,
-    so a one-shot ``RaiseFault(on_calls=[1])`` does not brick subsequent
-    calls.
-    """
-    @functools.wraps(method)
-    async def wrapper(self: Sim, *args: Any, **kwargs: Any) -> Any:
-        await self._faults.before(method.__name__)
-        return await method(self, *args, **kwargs)
-    return wrapper
-
-
-_FaultHookC = TypeVar("_FaultHookC", bound=type)
-
-
-def _apply_fault_hook(cls: _FaultHookC) -> _FaultHookC:
-    """Class decorator: wrap each public async method to run fault checks.
-
-    Walks ``vars(cls)`` (own methods only, not inherited) and replaces
-    every async method that does not start with ``_`` with a
-    fault-checking wrapper. Records the wrapped names on
-    ``cls._faultable_methods`` (a ClassVar frozenset) so ``BaseSimDriver``
-    + ``SimTransporterDriver`` can validate that every ``FaultSpec.method``
-    actually targets a known method on the driver.
-    """
-    own_names: set[str] = set()
-    for name, attr in list(vars(cls).items()):
-        if name.startswith("_"):
-            continue
-        if not asyncio.iscoroutinefunction(attr):
-            continue
-        setattr(cls, name, _fault_hook(attr))
-        own_names.add(name)
-    # Don't set `_faultable_methods` on classes that define no own
-    # methods (e.g. `WasteSimMixin(StorageSimMixin): pass`). Setting an
-    # empty frozenset would shadow the parent's set; the MRO walk in
-    # `_collect_faultable_methods` would still rescue correctness, but
-    # the shadowed attribute is misleading to a reader.
-    if own_names:
-        setattr(cls, "_faultable_methods", frozenset(own_names))
-    return cls
+class Sim(_FaultInjectable, SimulatesSteps):
+    pass
 
 
 def _collect_faultable_methods(cls: type) -> frozenset[str]:
-    """Union of ``_faultable_methods`` across ``cls.__mro__``.
+    """Union of the commands the hook observes across ``cls.__mro__``.
 
     ``BaseSimDriver`` + ``SimTransporterDriver`` use this in ``__init__``
     to validate ``FaultSpec.method`` against the methods their concrete
@@ -195,7 +165,7 @@ def _collect_faultable_methods(cls: type) -> frozenset[str]:
     """
     names: set[str] = set()
     for klass in cls.__mro__:
-        names |= getattr(klass, "_faultable_methods", frozenset())
+        names |= getattr(klass, "_hooked_commands", frozenset())
     return frozenset(names)
 
 
@@ -247,8 +217,7 @@ class HumanSim(SimStrategy):
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, input, full)
 
-@_apply_fault_hook
-class BaseSimDriver:
+class BaseSimDriver(_FaultInjectable):
     """Base simulation driver with common functionality.
 
     Accepts an optional ``faults`` list at construction. Each
@@ -256,9 +225,6 @@ class BaseSimDriver:
     method surface (collected across the MRO) and rejected at boot if
     it targets an unknown method.
     """
-
-    _faultable_methods: ClassVar[frozenset[str]] = frozenset()
-
 
     def __init__(
         self,
@@ -305,7 +271,6 @@ class BaseSimDriver:
 
 # Mixins for simulation functionality
 
-@_apply_fault_hook
 class ShakerSimMixin(Sim, IShakerDriver):
     """Mixin for shaker simulation functionality"""
     _supports_locking = True
@@ -333,7 +298,6 @@ class ShakerSimMixin(Sim, IShakerDriver):
         logger.info("Plate unlocked.")
 
 
-@_apply_fault_hook
 class SealerSimMixin(Sim, ISealerDriver):
     """Mixin for sealer simulation functionality"""
     async def open(self) -> None:
@@ -353,7 +317,6 @@ class SealerSimMixin(Sim, ISealerDriver):
         logger.info("Sealing completed successfully.")
 
 
-@_apply_fault_hook
 class TempSettableSimMixin(Sim, ITempSettableDriver):
     """Mixin for temperature settable functionality"""
 
@@ -363,7 +326,6 @@ class TempSettableSimMixin(Sim, ITempSettableDriver):
         logger.info(f"Temperature set to {temperature}°C.")
 
 
-@_apply_fault_hook
 class TempGettableSimMixin(Sim, ITempGettableDriver):
     """Mixin for temperature gettable functionality"""
 
@@ -372,7 +334,6 @@ class TempGettableSimMixin(Sim, ITempGettableDriver):
         logger.info("Getting current temperature.")
         return 25.0  # Mock temperature value
 
-@_apply_fault_hook
 class ProtocolRunnerSimMixin(Sim, IgnoresLabwareHandoff):
     """Mixin for protocol runner functionality"""
 
@@ -383,7 +344,6 @@ class ProtocolRunnerSimMixin(Sim, IgnoresLabwareHandoff):
         logger.info(f"Protocol {request.protocol_filepath} executed successfully.")
 
 
-@_apply_fault_hook
 class CentrifugeSimMixin(Sim, ICentrifugeDriver):
     """Mixin for centrifuge functionality"""
 
@@ -404,7 +364,6 @@ class CentrifugeSimMixin(Sim, ICentrifugeDriver):
         logger.info("Centrifuge spin completed successfully.")
 
 
-@_apply_fault_hook
 class ThermocyclerSimMixin(Sim, IThermocyclerDriver):
     """Mixin for thermocycler functionality.
 
@@ -564,7 +523,6 @@ class ThermocyclerSimMixin(Sim, IThermocyclerDriver):
         return StepCountResponse(count=self._total_steps)
 
 
-@_apply_fault_hook
 class ReaderSimMixin(Sim, IReaderDriver):
     """Mixin for reader functionality"""
 
@@ -577,13 +535,17 @@ class ReaderSimMixin(Sim, IReaderDriver):
         )
 
 
-@_apply_fault_hook
 class DelidderSimMixin(Sim, IDelidderDriver):
     """Mixin for delidder functionality"""
 
     async def delid(self, request: DelidRequest) -> None:
         await self._sim("Delidding labware...")
         logger.info("Labware delidded successfully.")
+
+
+def _names_no_labware(request: PickAtCoordsRequest | PlaceAtCoordsRequest) -> bool:
+    """A pick or place sent with nothing on record: no labware type and no labware identity."""
+    return request.labware_type == "" and request.expected_labware is None
 
 
 class SimTransporterValidationError(RuntimeError):
@@ -596,8 +558,11 @@ class SimTransporterValidationError(RuntimeError):
     """
 
 
-@_apply_fault_hook
-class SimTransporterDriver(ITransporterDriver):
+class SimSpeedNotSetError(RuntimeError):
+    """A simulated arm was asked its speed before anything set one; a real arm reads its controller's."""
+
+
+class SimTransporterDriver(_FaultInjectable, ITransporterDriver):
     """Simulation transporter driver.
 
     Validates three logical invariants on pick/place by reading parent/child
@@ -607,10 +572,9 @@ class SimTransporterDriver(ITransporterDriver):
     clearance, gripper-finger compatibility).
 
     The `pick_at_coords`/`place_at_coords` methods key validation by
-    `teachpoint.position_id`. The sim does not walk `request.gateway_path` —
-    only the production driver (`PLRTransporterBackendWrapper`)
-    traverses gateway waypoints. The sim treats pick/place as a single
-    atomic op against the destination position.
+    `teachpoint.position_id` and treat pick/place as a single atomic op
+    against the destination position. It models no arm: it remembers only the
+    teachpoint its last move went to.
 
     Tests and sim setup seed labware at positions via `seed_position`. The
     transporter takes ownership of resources passed to `seed_position`
@@ -622,9 +586,11 @@ class SimTransporterDriver(ITransporterDriver):
     ``home``, etc.) per the same mechanism as ``BaseSimDriver`` mixins.
     """
 
+    _jogs_from_remembered_joints: ClassVar[bool] = True
+    """An arm jogs from the joint teachpoint it last moved to. A translator and a person have no joints and take any jog."""
+
     _GRIPPER_SUFFIX = "__sim_transporter_gripper__"
     _WORLD_SUFFIX = "__sim_transporter_world__"
-    _faultable_methods: ClassVar[frozenset[str]] = frozenset()
 
     def __init__(
         self,
@@ -644,13 +610,26 @@ class SimTransporterDriver(ITransporterDriver):
         self._world.assign_child_resource(self._gripper, location=None)
         self._positions: Dict[str, PLRResource] = {}
         self._faults = _validate_fault_specs(type(self), faults or [])
-        # Wire-shape `seed_position`/`ensure_seeded`/`unseed_position` accept
-        # `LabwareIdentity` instead of a real PLR resource. We mint a
-        # placeholder PLR resource per identity (keyed by `labware_id`) and
-        # cache it here so subsequent ensure/unseed/pick ops resolve to the
-        # same in-graph object. Real-hardware drivers do not maintain this
-        # map; physical state is the source of truth.
+        # One placeholder PLR resource per wire `LabwareIdentity`, so seed, unseed and pick
+        # all resolve to the same node in the sim's graph.
         self._resources_by_id: Dict[str, PLRResource] = {}
+        self._at: JointCoordinates | CartesianCoordinates | None = None
+        self._speed: Optional[float] = None
+
+    def _refuse_a_jog_with_no_joints(self) -> None:
+        if self._jogs_from_remembered_joints and not isinstance(self._at, JointCoordinates):
+            raise rejected_before_asking(NotImplementedError(
+                f"{self.name} is simulated and has no position to jog from: its last move was not to a joint "
+                "teachpoint. Move it to a joint teachpoint first, then jog."
+            ))
+
+    def _jog(self, axis: str, to: Callable[[float], float]) -> None:
+        """Move one axis of the joint teachpoint the driver stands at; one standing at none has no axis to move."""
+        if not isinstance(self._at, JointCoordinates):
+            return
+        was = self._at.model_dump().get(axis)
+        if isinstance(was, float):
+            self._at = self._at.model_copy(update={axis: to(was)})
 
     @property
     def name(self) -> str:
@@ -888,14 +867,19 @@ class SimTransporterDriver(ITransporterDriver):
     async def home(self, request: HomeRequest) -> None:
         """Homes the transporter."""
         await self._sim(f"Driver: {self.name} homing...")
+        self._at = None
         logger.info(f"Driver: {self.name} homed successfully.")
 
     async def move_to_safe(self, request: MoveToSafeRequest) -> None:
         """Moves the transporter to a safe position."""
         await self._sim(f"Driver: {self.name} moving to safe position...")
+        self._at = None
         logger.info(f"Driver: {self.name} moved to safe position successfully.")
 
-    async def _validated_pick(self, position_id: str, sim_message: str, log_message: str) -> None:
+    async def _validated_pick(
+        self, request: PickAtCoordsRequest, sim_message: str, log_message: str,
+    ) -> None:
+        position_id = request.teachpoint.position_id
         held = self._gripper_payload()
         if held is not None:
             raise SimTransporterValidationError(
@@ -903,17 +887,30 @@ class SimTransporterDriver(ITransporterDriver):
                 f"'{held.name}'; cannot pick from '{position_id}'"
             )
         labware = self._resource_at(position_id)
+        if labware is None and _names_no_labware(request):
+            # Nothing on record anywhere: the arm moves with its default grip and holds nothing the sim knows of.
+            await self._sim(sim_message)
+            self._at = request.teachpoint.coordinates
+            return
         if labware is None:
             raise SimTransporterValidationError(
                 f"pick rejected: position '{position_id}' is empty"
             )
         await self._sim(sim_message)
+        self._at = request.teachpoint.coordinates
         labware.unassign()
         self._gripper.assign_child_resource(labware, location=None)
         logger.info(log_message)
 
-    async def _validated_place(self, position_id: str, sim_message: str, log_message: str) -> None:
+    async def _validated_place(
+        self, request: PlaceAtCoordsRequest, sim_message: str, log_message: str,
+    ) -> None:
+        position_id = request.teachpoint.position_id
         payload = self._gripper_payload()
+        if payload is None and _names_no_labware(request):
+            await self._sim(sim_message)
+            self._at = request.teachpoint.coordinates
+            return
         if payload is None:
             raise SimTransporterValidationError(
                 f"place rejected: gripper is empty; nothing to place at '{position_id}'"
@@ -925,15 +922,10 @@ class SimTransporterDriver(ITransporterDriver):
                 f"by '{position.children[0].name}'"
             )
         await self._sim(sim_message)
+        self._at = request.teachpoint.coordinates
         payload.unassign()
         position.assign_child_resource(payload, location=None)
         logger.info(log_message)
-
-    async def _external_control_noop(self, gerund: str, past: str) -> None:
-        """Ad-hoc/external-control move: orca tracks no occupancy here, so
-        validate and mutate nothing; simulate motion only."""
-        await self._sim(f"Driver: {self.name} {gerund} at coords (external control)...")
-        logger.info(f"Driver: {self.name} {past} at coords (external control)")
 
     async def pick_at_coords(self, request: PickAtCoordsRequest) -> None:
         """Pick plate at coordinates specified by teachpoint.
@@ -945,9 +937,6 @@ class SimTransporterDriver(ITransporterDriver):
         raises `SimTransporterValidationError`.
         """
         teachpoint = request.teachpoint
-        if request.external_control:
-            await self._external_control_noop("picking", "picked")
-            return
         if request.expected_labware is not None:
             current = self._resource_at(teachpoint.position_id)
             if current is not None:
@@ -968,9 +957,7 @@ class SimTransporterDriver(ITransporterDriver):
             assert isinstance(coords, JointCoordinates)
             sim_message = f"Driver: {self.name} picking at joint coords (elbow={coords.elbow})..."
             log_message = f"Driver: {self.name} picked at joint coords (elbow={coords.elbow})"
-        await self._validated_pick(
-            position_id=teachpoint.position_id, sim_message=sim_message, log_message=log_message,
-        )
+        await self._validated_pick(request, sim_message=sim_message, log_message=log_message)
 
     async def place_at_coords(self, request: PlaceAtCoordsRequest) -> None:
         """Place plate at coordinates specified by teachpoint.
@@ -985,9 +972,6 @@ class SimTransporterDriver(ITransporterDriver):
         drift).
         """
         teachpoint = request.teachpoint
-        if request.external_control:
-            await self._external_control_noop("placing", "placed")
-            return
         if request.expected_labware is not None:
             held = self._gripper_payload()
             if held is not None:
@@ -1008,14 +992,13 @@ class SimTransporterDriver(ITransporterDriver):
             assert isinstance(coords, JointCoordinates)
             sim_message = f"Driver: {self.name} placing at joint coords (elbow={coords.elbow})..."
             log_message = f"Driver: {self.name} placed at joint coords (elbow={coords.elbow})"
-        await self._validated_place(
-            position_id=teachpoint.position_id, sim_message=sim_message, log_message=log_message,
-        )
+        await self._validated_place(request, sim_message=sim_message, log_message=log_message)
 
     async def move_to_coords(self, request: MoveToCoordsRequest) -> None:
         """Move to coordinates specified by teachpoint."""
         teachpoint = request.teachpoint
         coords = teachpoint.coordinates
+        self._at = coords
         if isinstance(coords, CartesianCoordinates):
             await self._sim(f"Driver: {self.name} moving to coords ({coords.x}, {coords.y}, {coords.z})...")
             logger.info(f"Driver: {self.name} moved to coords ({coords.x}, {coords.y}, {coords.z})")
@@ -1025,17 +1008,26 @@ class SimTransporterDriver(ITransporterDriver):
             logger.info(f"Driver: {self.name} moved to joint coords (elbow={coords.elbow})")
 
     async def get_joint_position(self, request: GetJointPositionRequest) -> JointCoordinates:
-        """Return simulated joint position (default safe position)."""
-        return JointCoordinates(rail=0.0, base=170.0, shoulder=0.0, elbow=180.0, wrist=0.0, gripper=0.0)
+        """The joint teachpoint the last motion command took the arm to. The sim models no arm, so it has no other."""
+        if not isinstance(self._at, JointCoordinates):
+            raise rejected_before_asking(NotImplementedError(
+                f"{self.name} is simulated and has no joints to read: its last move was not to a joint teachpoint. "
+                "Type the position into its teachpoints file instead of capturing it."
+            ))
+        return self._at
 
     async def move_single_axis(self, request: MoveSingleAxisRequest) -> None:
         """Move a single axis to absolute position."""
+        self._refuse_a_jog_with_no_joints()
         await self._sim(f"Driver: {self.name} moving {request.axis} to {request.position}...")
+        self._jog(request.axis, lambda _was: request.position)
         logger.info(f"Driver: {self.name} moved {request.axis} to {request.position}")
 
     async def move_single_axis_relative(self, request: MoveSingleAxisRelativeRequest) -> None:
         """Move a single axis by relative distance from current position."""
+        self._refuse_a_jog_with_no_joints()
         await self._sim(f"Driver: {self.name} moving {request.axis} by {request.distance}...")
+        self._jog(request.axis, lambda was: was + request.distance)
         logger.info(f"Driver: {self.name} moved {request.axis} by {request.distance}")
 
     async def set_free_mode(self, request: SetFreeModeRequest) -> None:
@@ -1045,10 +1037,11 @@ class SimTransporterDriver(ITransporterDriver):
 
     async def open_gripper(self, request: OpenGripperRequest) -> None:
         """Open the jaws, by a stated opening, to a named position, or by the default."""
-        if request.position is not None:
-            target = f"{request.position}"
-        elif request.jaw_opening is not None:
-            target = f"{request.jaw_opening} past its grip position"
+        position, opening = request.position, request.jaw_opening
+        if position is not None:
+            target = f"{position}"
+        elif opening is not None:
+            target = f"{opening} past its grip position"
         else:
             target = "its standoff"
         await self._sim(f"Driver: {self.name} opening gripper to {target}...")
@@ -1061,17 +1054,28 @@ class SimTransporterDriver(ITransporterDriver):
         logger.info(f"Driver: {self.name} gripper closed to {target}")
 
     async def get_cartesian_position(self, request: GetCartesianPositionRequest) -> CartesianCoordinates:
-        """Return simulated Cartesian position."""
-        return CartesianCoordinates(x=0.0, y=0.0, z=0.0, roll=0.0, pitch=0.0, yaw=0.0)
+        """The Cartesian teachpoint the last motion command took the arm to. The sim models no arm, so it has no other."""
+        if not isinstance(self._at, CartesianCoordinates):
+            raise rejected_before_asking(NotImplementedError(
+                f"{self.name} is simulated and has no tool point to read: its last move was not to a Cartesian "
+                "teachpoint. Type the position into its teachpoints file instead of capturing it."
+            ))
+        return self._at
 
     async def set_speed(self, request: SetSpeedRequest) -> None:
         """Set movement speed as percentage of maximum (0.0 to 1.0)."""
         await self._sim(f"Driver: {self.name} setting speed to {request.speed * 100}%...")
+        self._speed = request.speed
         logger.info(f"Driver: {self.name} speed set to {request.speed * 100}%")
 
     async def get_speed(self, request: GetSpeedRequest) -> float:
         """Get current movement speed setting as percentage (0.0 to 1.0)."""
-        return 0.5  # Default 50% speed
+        if self._speed is None:
+            raise SimSpeedNotSetError(
+                f"{self.name} has no speed yet: a sim knows only what set_speed told it, "
+                "and nothing has. A real arm reports its controller's monitor speed."
+            )
+        return self._speed
 
     async def halt(self, request: HaltRequest) -> None:
         """Emergency stop - immediately halt all movement."""
@@ -1079,7 +1083,6 @@ class SimTransporterDriver(ITransporterDriver):
         logger.warning(f"Driver: {self.name} emergency halt executed")
 
 
-@_apply_fault_hook
 class StorageSimMixin(Sim, IStorageDriver):
     async def dispense(self) -> None:
         await self._sim("Dispensing plate from source")
@@ -1130,8 +1133,7 @@ class _SimDeckItem:
         return len(seed.tip_spots) if isinstance(seed, TipRackSeedEntry) else None
 
 
-@_apply_fault_hook
-class LiquidHandlerSimMixin(Sim, ILiquidHandlerDriver):
+class LiquidHandlerSimMixin(RetractsHeadsBeforeTravel, Sim, ILiquidHandlerDriver):
     """Sim mixin implementing ILiquidHandlerDriver with string-based Pydantic requests.
 
     Volumes and tip state are not tracked (provides_state=False, so the
@@ -1141,7 +1143,7 @@ class LiquidHandlerSimMixin(Sim, ILiquidHandlerDriver):
     placed and needs an occupied site refused, exactly as PyLabRobot refuses it.
     """
 
-    provides_state: bool = False
+    provides_state: ClassVar[bool] = False
 
     _empty_response = LabwareStateResponse(success=True)
 
@@ -1154,13 +1156,20 @@ class LiquidHandlerSimMixin(Sim, ILiquidHandlerDriver):
             self._deck_items = existing
         return existing
 
+    async def _retract_heads(self, command: str) -> None:
+        # Logged, not simulated: a sim strategy that waits for a person would ask before every move.
+        logger.info(f"Driver: {self.name} lifting every head before {command}.")
+
     def _site_of(self, name: str) -> Optional[str]:
         return next((site for site, item in self._deck.items() if item.name == name), None)
 
-    def _place_on_deck(self, name: str, catalog_ref: str, site: str) -> None:
+    def _require_site_free_for(self, site: str, name: str) -> None:
         occupant = self._deck.get(site)
-        if occupant is not None:
+        if occupant is not None and occupant.name != name:
             raise ValueError(f"Site {site} is already occupied by '{occupant.name}'.")
+
+    def _place_on_deck(self, name: str, catalog_ref: str, site: str) -> None:
+        self._require_site_free_for(site, name)
         if self._site_of(name) is not None:
             raise ValueError(f"Labware '{name}' is already on the deck.")
         self._deck[site] = _SimDeckItem(name=name, catalog_ref=catalog_ref)
@@ -1278,8 +1287,25 @@ class LiquidHandlerSimMixin(Sim, ILiquidHandlerDriver):
         return self._empty_response
 
     async def move_plate(self, request: MovePlateRequest) -> None:
+        if request.plate is None:
+            self._require_site_free_for(request.to_position, DEFAULT_GRIP_LABWARE)
+            await self._sim(f"Move the gripper from {request.from_position} to {request.to_position}, holding nothing on record")
+            return
+        site = self._site_of(request.plate)
+        if site is None:
+            raise ValueError(f"move_plate target '{request.plate}' is not on the deck.")
+        # The Flex refuses a from_position another plate holds; the sim matches it.
+        if request.from_position is not None:
+            source = self._deck.get(request.from_position)
+            if source is not None and source.name != request.plate:
+                raise ValueError(
+                    f"from_position {request.from_position} holds '{source.name}', not "
+                    f"'{request.plate}'. Reconcile deck occupancy before moving."
+                )
+        self._require_site_free_for(request.to_position, request.plate)
         from_str = f" from {request.from_position}" if request.from_position else ""
         await self._sim(f"Move plate {request.plate}{from_str} to {request.to_position}")
+        self._deck[request.to_position] = self._deck.pop(site)
 
     async def add_deck_labware(self, request: AddDeckLabwareRequest) -> None:
         await self._sim(f"Add deck labware {request.name} ({request.catalog_ref}) at {request.at}")
@@ -1325,8 +1351,7 @@ plausible height that keeps a probe-then-pipette workflow runnable, not a
 measurement of anything."""
 
 
-@_apply_fault_hook
-class LiquidProbeSimMixin(Sim, ILiquidProbeDriver):
+class LiquidProbeSimMixin(SimulatesSteps, ILiquidProbeDriver):
     """Sim liquid-level detection: always finds liquid, always at the same height."""
 
     async def liquid_probe(self, request: LiquidProbeRequest) -> LiquidProbeResponse:
@@ -1335,8 +1360,7 @@ class LiquidProbeSimMixin(Sim, ILiquidProbeDriver):
         return LiquidProbeResponse(height=SIM_LIQUID_HEIGHT_MM)
 
 
-@_apply_fault_hook
-class HomeableSimMixin(Sim, IHomeableDriver):
+class HomeableSimMixin(SimulatesSteps, IHomeableDriver):
     """Sim homing: reports the sweep, moves nothing.
 
     Here so a workflow that homes before its first move runs unchanged with no
@@ -1349,8 +1373,7 @@ class HomeableSimMixin(Sim, IHomeableDriver):
         logger.info(f"Driver: {self.name} homed successfully.")
 
 
-@_apply_fault_hook
-class GantryParkingSimMixin(Sim, IGantryParkingDriver):
+class GantryParkingSimMixin(SimulatesSteps, IGantryParkingDriver):
     """Sim parking: reports the move, moves nothing, never refuses.
 
     A real handler refuses while it carries tips or holds a plate in its jaws.
@@ -1364,11 +1387,9 @@ class GantryParkingSimMixin(Sim, IGantryParkingDriver):
         logger.info(f"Driver: {self.name} parked successfully.")
 
 
-@_apply_fault_hook
 class PlateWasherSimMixin(ProtocolRunnerSimMixin, IPlateWasherDriver):
     pass
 
-@_apply_fault_hook
 class WasteSimMixin(StorageSimMixin, IWasteDriver):
     pass
 
@@ -1442,6 +1463,55 @@ class SimLiquidHandlerWithProtocolDriver(
          "IGantryParking"}
     )
 
+class SimPLRLiquidHandlerDriver(BaseSimDriver, LiquidHandlerSimMixin):
+    """Stands in for a PyLabRobot liquid handler with no driver of its own, which offers only ILiquidHandler."""
+
+    interfaces: ClassVar[frozenset[str]] = frozenset({"ILiquidHandler"})
+
+
+class SimOT2LiquidHandlerDriver(BaseSimDriver, LiquidHandlerSimMixin, PipetteMotionSimMixin):
+    """Stands in for the Opentrons OT-2."""
+
+    interfaces: ClassVar[frozenset[str]] = frozenset({"ILiquidHandler", "IPipetteMotion"})
+    _channels_reference_tip_end_only = True
+
+
+class SimFlexLiquidHandlerDriver(
+    BaseSimDriver,
+    LiquidHandlerSimMixin,
+    LiquidProbeSimMixin,
+    HomeableSimMixin,
+    GantryParkingSimMixin,
+    PipetteMotionSimMixin,
+    GripperMotionSimMixin,
+    ForceGripperJawSimMixin,
+):
+    """Stands in for the Opentrons Flex."""
+
+    interfaces: ClassVar[frozenset[str]] = frozenset(
+        {"ILiquidHandler", "ILiquidProbe", "IHomeable", "IGantryParking", "IPipetteMotion", "IGripperMotion",
+         "IForceGripperJaw"}
+    )
+    _channels_reference_tip_end_only = True
+
+
+class SimSTARLiquidHandlerDriver(
+    BaseSimDriver,
+    LiquidHandlerSimMixin,
+    PipetteMotionSimMixin,
+    GripperMotionSimMixin,
+    GripperPositionSimMixin,
+    WidthGripperJawSimMixin,
+    GripperRotationSimMixin,
+):
+    """Stands in for the Hamilton STAR."""
+
+    interfaces: ClassVar[frozenset[str]] = frozenset(
+        {"ILiquidHandler", "IPipetteMotion", "IGripperMotion", "IGripperPosition", "IWidthGripperJaw",
+         "IGripperRotation"}
+    )
+
+
 class SimDelidderDriver(BaseSimDriver, DelidderSimMixin):
     pass
 
@@ -1449,7 +1519,11 @@ class SimWasteDriver(BaseSimDriver, WasteSimMixin):
     pass
 
 class SimReaderDriver(BaseSimDriver, ReaderSimMixin):
-    pass
+    async def open(self) -> None:
+        await self._sim(f"Opening {self.name}...")
+
+    async def close(self) -> None:
+        await self._sim(f"Closing {self.name}...")
 
 
 # ----------------------------------------------------------------------
@@ -1470,7 +1544,7 @@ class RecordedCall:
     args: Dict[str, Any]
 
 
-class RecordingLiquidHandlerDriver(ILiquidHandlerDriver):
+class RecordingLiquidHandlerDriver(RetractsHeadsBeforeTravel, ILiquidHandlerDriver):
     """Wraps an ILiquidHandlerDriver and records every method call.
 
     Delegates to the inner driver so the full pipeline is exercised.
@@ -1483,6 +1557,10 @@ class RecordingLiquidHandlerDriver(ILiquidHandlerDriver):
     def __init__(self, inner: ILiquidHandlerDriver) -> None:
         self._inner = inner
         self.calls: List[RecordedCall] = []
+
+    async def _retract_heads(self, command: str) -> None:
+        # The inner driver lifts its own heads when the call reaches it.
+        return None
 
     async def initialize(self) -> None:
         await self._inner.initialize()

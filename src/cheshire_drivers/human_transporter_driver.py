@@ -1,6 +1,6 @@
 """Transporter driver that prompts operators with clear pick/place instructions."""
 
-from typing import Optional
+from typing import ClassVar, Optional
 
 from cheshire_drivers.sims import HumanSim, SimStrategy, SimTransporterDriver
 from cheshire_drivers.transporter_models import PickAtCoordsRequest, PlaceAtCoordsRequest
@@ -16,6 +16,8 @@ class HumanTransporterDriver(SimTransporterDriver):
     Other inherited methods (initialize, home, move_to_safe) keep their
     SimTransporterDriver behavior.
     """
+
+    _jogs_from_remembered_joints: ClassVar[bool] = False
 
     def __init__(self, name: str, sim_strategy: Optional[SimStrategy] = None) -> None:
         super().__init__(name, sim_strategy or HumanSim())

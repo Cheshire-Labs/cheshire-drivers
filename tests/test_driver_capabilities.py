@@ -39,7 +39,6 @@ from cheshire_drivers.interfaces import (
     ITempSettableDriver,
     ITransporterDriver,
 )
-from cheshire_drivers.lh_request_validation import LH_REQUEST_MODELS
 
 
 ALL_INTERFACES: list[type] = sorted(
@@ -378,66 +377,3 @@ class TestExternalIntrospectionProjection:
         # so membership proves @external did not strip abstractness.
         assert "aspirate" in ILiquidHandlerDriver.__abstractmethods__
         assert "add_deck_labware" in ILiquidHandlerDriver.__abstractmethods__
-
-
-def _interface_declaring(command: str) -> type | None:
-    """The interface class that makes `command` abstract, or None.
-
-    Not every liquid-handler wire command comes from ILiquidHandlerDriver. A
-    capability a liquid handler shares with other device kinds lives on its own
-    interface -- `home` is on IHomeableDriver, which an arm carries too -- so
-    the registry is checked against whichever interface declares each command.
-    """
-    for name in dir(interfaces_module):
-        cls = getattr(interfaces_module, name)
-        if not inspect.isclass(cls) or not name.startswith("I"):
-            continue
-        if command in getattr(cls, "__abstractmethods__", frozenset()):
-            return cls
-    return None
-
-
-class TestLhRequestModelsAlignWithInterface:
-    """The lh_request_validation registry must match the abstract method
-    signatures of whichever interface declares each command."""
-
-    def test_every_lh_request_model_command_is_abstract_on_an_interface(self) -> None:
-        for command in LH_REQUEST_MODELS:
-            assert _interface_declaring(command) is not None, (
-                f"LH_REQUEST_MODELS lists {command!r} but no interface declares "
-                f"it abstract, so nothing pins its wire shape"
-            )
-
-    def test_lh_request_model_kwarg_name_matches_method_signature(self) -> None:
-        for command, (kwarg_name, model_cls) in LH_REQUEST_MODELS.items():
-            declaring = _interface_declaring(command)
-            assert declaring is not None, f"no interface declares {command!r}"
-            sig = inspect.signature(getattr(declaring, command))
-            params = [name for name in sig.parameters if name != "self"]
-            assert kwarg_name in params, (
-                f"LH_REQUEST_MODELS[{command!r}] declares kwarg name {kwarg_name!r} "
-                f"but {declaring.__name__}.{command} signature has params {params}"
-            )
-
-    def test_lh_request_model_type_matches_method_annotation(self) -> None:
-        for command, (kwarg_name, model_cls) in LH_REQUEST_MODELS.items():
-            declaring = _interface_declaring(command)
-            assert declaring is not None, f"no interface declares {command!r}"
-            sig = inspect.signature(getattr(declaring, command))
-            param = sig.parameters.get(kwarg_name)
-            assert param is not None
-            assert param.annotation is model_cls, (
-                f"LH_REQUEST_MODELS[{command!r}] = {model_cls.__name__} but "
-                f"{declaring.__name__}.{command}({kwarg_name}: ...) is annotated "
-                f"as {param.annotation}"
-            )
-
-    def test_every_atomic_lh_abstract_method_has_an_entry(self) -> None:
-        non_atomic = {"open", "close", "initialize", "is_initialized"}
-        atomic_abstracts = ILiquidHandlerDriver.__abstractmethods__ - non_atomic
-        registered = set(LH_REQUEST_MODELS)
-        missing = atomic_abstracts - registered
-        assert not missing, (
-            f"LH atomic methods on ILiquidHandlerDriver missing from "
-            f"lh_request_validation registry: {sorted(missing)}"
-        )

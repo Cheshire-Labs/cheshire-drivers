@@ -77,6 +77,23 @@ def command_timing(*, typical: float, max: float) -> Callable[[F], F]:
     return _wrap
 
 
+_NO_SIM_WAIT_ATTR = "__simulator_does_not_wait__"
+
+
+def simulator_does_not_wait(fn: F) -> F:
+    """Mark a command a simulator answers at once: bring-up, a record push or a read, which move nothing.
+
+    The command keeps its ``@command_timing``, because the typical time also sets its time limit.
+    """
+    setattr(fn, _NO_SIM_WAIT_ATTR, True)
+    return fn
+
+
+def simulator_waits_for(fn: Callable[..., object]) -> bool:
+    """Whether a simulator waits out the engine's estimate for this command."""
+    return getattr(fn, _NO_SIM_WAIT_ATTR, False) is not True
+
+
 def collect_command_timings(driver_cls: type) -> Mapping[str, CommandTiming]:
     """Collect every ``@command_timing`` reachable through the driver's MRO.
 

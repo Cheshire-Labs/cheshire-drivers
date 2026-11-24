@@ -31,7 +31,6 @@ from cheshire_drivers.liquid_handler_models import (
     PipettingParameters,
     TipPick,
 )
-from cheshire_drivers.lh_request_validation import normalize_lh_flow_rate
 from cheshire_drivers.plr.labware import PLRPlateAdapter, PLRTipRackAdapter
 from cheshire_drivers.plr_tracker_seeding import swap_to_lenient_tracker
 from cheshire_drivers.plr.liquid_handler import ChatterboxLiquidHandlerDriver
@@ -464,36 +463,32 @@ class TestTheWireRefusesWhatWouldQuietlyDoNothing:
         through would be spread too, and the refusal would come from pydantic
         naming `flow_rates`, a field the caller never sent."""
         with pytest.raises(ValueError, match="flow_rate must be a number"):
-            normalize_lh_flow_rate(
+            AspirateRequest.model_validate(
                 {
                     "flow_rate": {"value": 5},
                     "aspirations": [{"labware": "p", "positions": ["A1"], "volumes": [10.0]}],
                 },
-                AspirateRequest,
             )
 
     def test_a_numeric_string_flow_rate_is_read_as_the_number(self) -> None:
         """`flow_rates` goes through pydantic, which reads "5" as 5.0, so the
         scalar that expands into it must not be stricter than the field it becomes."""
-        expanded = normalize_lh_flow_rate(
+        expanded = AspirateRequest.model_validate(
             {
                 "flow_rate": "5",
                 "aspirations": [{"labware": "p", "positions": ["A1", "A2"], "volumes": [10.0, 10.0]}],
             },
-            AspirateRequest,
         )
 
-        assert expanded["flow_rates"] == [5.0, 5.0]
-        assert "flow_rate" not in expanded
+        assert expanded.flow_rates == [5.0, 5.0]
 
     def test_a_bool_flow_rate_is_refused_rather_than_read_as_one(self) -> None:
         with pytest.raises(ValueError, match="flow_rate must be a number, got bool"):
-            normalize_lh_flow_rate(
+            AspirateRequest.model_validate(
                 {
                     "flow_rate": True,
                     "aspirations": [{"labware": "p", "positions": ["A1"], "volumes": [10.0]}],
                 },
-                AspirateRequest,
             )
 
     def test_a_mix_with_an_empty_position_list_is_refused(self) -> None:

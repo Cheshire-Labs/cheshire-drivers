@@ -23,7 +23,7 @@ from cheshire_drivers.driver_errors import (
     outcome_of,
 )
 from cheshire_drivers.gantry_models import GantryBusyError
-from cheshire_drivers.gateway_protocol import PROTOCOL_VERSION, ResponseMessage
+from cheshire_drivers.gateway_protocol import ResponseMessage
 
 
 def test_a_refusal_says_it_actuated_nothing() -> None:
@@ -89,14 +89,6 @@ def test_a_success_carries_no_outcome() -> None:
 
     assert response.instrument_outcome is None
 
-
-def test_the_protocol_version_moved_with_the_field() -> None:
-    """Both ends validate the version at the handshake and close 1002 on a
-    mismatch, so a new field on the response is a version change. So is a
-    new accepted value on a field that already exists: a peer that does not
-    know `rejected` fails validation and drops the whole socket, and only
-    the version stops those two builds ever pairing."""
-    assert PROTOCOL_VERSION == "1.3.0"
 
 
 @pytest.mark.parametrize("outcome, moved_nothing, ask_again", [

@@ -3,7 +3,10 @@
 import logging
 from typing import ClassVar
 
+from cheshire_drivers.driver_hooks import DriverHooks
 from cheshire_drivers.driver_introspection import VendorSurface
+from cheshire_drivers.head_retract import FirstMoveGate, every_command_of
+from cheshire_drivers.gantry_models import GantryBusyError, ParkGantryRequest
 from cheshire_drivers.gripper_models import (
     GetGripperPositionRequest,
     GetGripperRotationRequest,
@@ -15,6 +18,7 @@ from cheshire_drivers.gripper_models import (
     SetJawWidthRequest,
 )
 from cheshire_drivers.interfaces import (
+    IGantryParkingDriver,
     IGripperMotionDriver,
     IGripperPositionDriver,
     IGripperRotationDriver,
@@ -31,8 +35,19 @@ from cheshire_drivers.pipette_motion_models import (
     ZReference,
     require_tip_end_datum,
 )
+from cheshire_drivers.plr.gated_backends import GatedOT2Backend, GatedSTARBackend
 from cheshire_drivers.plr_wrappers import PLRLiquidHandlerWrapper, SimServerLifecycle
 from cheshire_drivers.protocol_runner_models import RunProtocolRequest
+from cheshire_drivers.sim_motion import (
+    ForceGripperJawSimMixin,
+    GripperMotionSimMixin,
+    GripperPositionSimMixin,
+    GripperRotationSimMixin,
+    PipetteMotionSimMixin,
+    SimulatesSteps,
+    WidthGripperJawSimMixin,
+)
+from cheshire_drivers.sims import HomeableSimMixin, LiquidProbeSimMixin
 from cheshire_drivers.wire_timeouts import WireTimeout, resolve_wire_timeout
 from pylabrobot.legacy.liquid_handling.backends.chatterbox import LiquidHandlerChatterboxBackend
 from pylabrobot.legacy.liquid_handling.backends.hamilton.STAR_backend import STARBackend
@@ -41,15 +56,39 @@ from pylabrobot.legacy.liquid_handling.backends.opentrons_backend import Opentro
 logger = logging.getLogger("cheshire_drivers")
 
 
-class ChatterboxLiquidHandlerDriver(PLRLiquidHandlerWrapper):
-    """Simulated liquid handler using PyLabRobot's Chatterbox backend.
+class ChatterboxPLRLiquidHandlerDriver(PLRLiquidHandlerWrapper, SimulatesSteps):
+    """Simulated liquid handler using PyLabRobot's Chatterbox backend, which models the deck.
 
     Prints all pipetting operations without physical hardware.
     Call configure_deck() with a DeckLayoutConfig before initialize().
+    Stands in for a PyLabRobot liquid handler with no driver of its own, which offers only ILiquidHandler.
     """
 
-    def __init__(self, num_channels: int = 8, visualize: bool = False) -> None:
+    interfaces: ClassVar[frozenset[str]] = frozenset({"ILiquidHandler"})
+
+    def __init__(self, num_channels: int = 8, visualize: bool = False, *, name: str = "chatterbox") -> None:
         super().__init__(LiquidHandlerChatterboxBackend(num_channels), visualize=visualize)
+        self._name = name
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    async def _sim(self, message: str) -> None:
+        logger.info(message)
+
+
+class ChatterboxLiquidHandlerDriver(ChatterboxPLRLiquidHandlerDriver, IGantryParkingDriver):
+    """A Chatterbox liquid handler that parks like the handlers it stands in for.
+
+    It never refuses: the sim holds nothing in its jaws, and a faked refusal would only pin the fake.
+    """
+
+    # Restated rather than unioned: a subclass's `interfaces` shadows its bases'.
+    interfaces: ClassVar[frozenset[str]] = frozenset({"ILiquidHandler", "IGantryParking"})
+
+    async def park_gantry(self, request: ParkGantryRequest) -> None:
+        return None
 
 
 class ChatterboxLiquidHandlerWithProtocolDriver(
@@ -61,7 +100,7 @@ class ChatterboxLiquidHandlerWithProtocolDriver(
     keeps the real Chatterbox deck (``provides_state=True``, every atomic op
     materializes/reconciles labware on a PLR deck tree) and adds a no-op
     ``run_protocol`` so a workflow that drives a deck-modeled handler through
-    either atomic ops or a protocol file resolves cleanly under PURE_SIM.
+    either atomic ops or a protocol file resolves cleanly under CHECK_RUN.
 
     PLR has no external protocol-file concept, so ``run_protocol`` logs and
     returns; the deck fidelity comes entirely from the atomic-op path.
@@ -74,11 +113,8 @@ class ChatterboxLiquidHandlerWithProtocolDriver(
     """
 
     interfaces: ClassVar[frozenset[str]] = frozenset(
-        {"ILiquidHandler", "IProtocolRunner"}
+        {"ILiquidHandler", "IProtocolRunner", "IGantryParking"}
     )
-
-    def __init__(self, num_channels: int = 8, visualize: bool = False) -> None:
-        super().__init__(num_channels=num_channels, visualize=visualize)
 
     async def run_protocol(self, request: RunProtocolRequest) -> None:
         logger.info(
@@ -88,7 +124,83 @@ class ChatterboxLiquidHandlerWithProtocolDriver(
         )
 
 
-class _PLROpentronsBackendHolder:
+class ChatterboxOT2LiquidHandlerDriver(ChatterboxPLRLiquidHandlerDriver, PipetteMotionSimMixin):
+    """Stands in for the Opentrons OT-2, modelling its deck."""
+
+    interfaces: ClassVar[frozenset[str]] = frozenset({"ILiquidHandler", "IPipetteMotion"})
+    _channels_reference_tip_end_only = True
+
+
+class ChatterboxFlexLiquidHandlerDriver(
+    ChatterboxLiquidHandlerDriver,
+    LiquidProbeSimMixin,
+    HomeableSimMixin,
+    PipetteMotionSimMixin,
+    GripperMotionSimMixin,
+    ForceGripperJawSimMixin,
+):
+    """Stands in for the Opentrons Flex, modelling its deck."""
+
+    interfaces: ClassVar[frozenset[str]] = frozenset(
+        {"ILiquidHandler", "ILiquidProbe", "IHomeable", "IGantryParking", "IPipetteMotion", "IGripperMotion",
+         "IForceGripperJaw"}
+    )
+    _channels_reference_tip_end_only = True
+
+
+class ChatterboxSTARLiquidHandlerDriver(
+    ChatterboxPLRLiquidHandlerDriver,
+    PipetteMotionSimMixin,
+    GripperMotionSimMixin,
+    GripperPositionSimMixin,
+    WidthGripperJawSimMixin,
+    GripperRotationSimMixin,
+):
+    """Stands in for the Hamilton STAR, modelling its deck."""
+
+    interfaces: ClassVar[frozenset[str]] = frozenset(
+        {"ILiquidHandler", "IPipetteMotion", "IGripperMotion", "IGripperPosition", "IWidthGripperJaw",
+         "IGripperRotation"}
+    )
+
+
+_STAR_TRAVELS: frozenset[str] = frozenset({
+    "aspirate", "aspirate_pip", "aspirate96", "aspirate_core_96",
+    "dispense", "dispense_pip", "dispense96", "dispense_core_96",
+    "pick_up_tip", "pick_up_tips", "pick_up_tips96", "pick_up_tips_core96",
+    "drop_tips", "drop_tips96", "discard_tip", "discard_tips_core96",
+    "pick_up_resource", "move_picked_up_resource", "drop_resource",
+    "iswap_get_plate", "iswap_put_plate", "iswap_move_picked_up_resource", "move_plate_to_position",
+    "core_get_plate", "core_put_plate", "core_move_plate_to_position",
+    "core_pick_up_resource", "core_move_picked_up_resource",
+    "get_core", "put_core", "pick_up_core_gripper_tools", "return_core_gripper_tools",
+    "move_channel_x", "move_channel_x_relative", "move_channel_y", "move_channel_y_relative",
+    "position_left_x_arm_", "position_right_x_arm_", "experimental_x_arm_move",
+    "position_channels_in_y_direction", "position_single_pipetting_channel_in_y_direction",
+    "position_components_for_free_iswap_y_range", "position_max_free_y_for_n",
+    "move_all_pipetting_channels_to_defined_position",
+    "move_iswap_x", "move_iswap_x_relative", "move_iswap_y", "move_iswap_y_relative",
+    "experimental_iswap_rotation_drive_move_x", "iswap_rotation_drive_move_y",
+    "head96_move_x", "head96_move_y", "head96_move_to_coordinate", "move_96head_to_coordinate",
+    "move_core_96_head_x", "move_core_96_head_y", "move_core_96_head_to_defined_position",
+    "probe_liquid_heights", "probe_liquid_volumes",
+    "clld_probe_x_position_using_channel", "clld_probe_y_position_using_channel",
+    "search_for_teach_in_signal_using_pipetting_channel_n_in_x_direction",
+    "park_iswap", "head96_park", "spread_pip_channels", "empty_tip", "empty_tips",
+    "head96_experimental_aspirate", "head96_experimental_dispense", "prepare_iswap_teaching",
+    "pre_initialize_instrument", "initialize_pip", "initialize_pipetting_channels",
+    "initialize_core_96_head", "initialize_iswap",
+    "core_check_resource_exists_at_location_center", "core_read_barcode_of_picked_up_resource",
+    "core_release_picked_up_resource",
+})
+"""MLSTAR firmware commands that move a channel, the 96 head or the iSWAP in X or Y.
+
+The two `move_*_x_arm_to_position_with_all_attached_components_in_z_safety_position` commands are left out:
+they raise every component to Z safety on their own.
+"""
+
+
+class _PLROpentronsBackendHolder(DriverHooks):
     """Carries the backend handle for the pipette motion mixin.
 
     Declaring the attribute here rather than on the mixin keeps pyright from flagging it as a
@@ -136,13 +248,16 @@ class OT2LiquidHandlerDriver(PLRLiquidHandlerWrapper, PLROpentronsPipetteMotionM
 
     Declares IPipetteMotion but none of the gripper interfaces: the OT-2 has no gripper, only the
     two pipette mounts. Channel motion is the same shared surface the Flex uses.
+
+    Never run on a real OT-2: written against PyLabRobot's OT-2 backend and tested in simulation only.
     """
 
     interfaces: ClassVar[frozenset[str]] = frozenset({"ILiquidHandler", "IPipetteMotion"})
 
     # Forwarded so the robot-server's own commands are advertised and cataloged.
     vendor_surfaces: ClassVar[tuple[VendorSurface, ...]] = (
-        VendorSurface(path="_backend", type=OpentronsOT2Backend),
+        # Every command is offered the lift; the wire lifts only before one that moves.
+        VendorSurface(path="_backend", type=OpentronsOT2Backend, travels=every_command_of(OpentronsOT2Backend)),
     )
 
     def __init__(
@@ -165,7 +280,9 @@ class OT2LiquidHandlerDriver(PLRLiquidHandlerWrapper, PLROpentronsPipetteMotionM
             that would give up sooner is refused.
         """
         self.wire_timeout = resolve_wire_timeout(wire_timeout, type(self), poll_interval=0.05)
-        backend = OpentronsOT2Backend(
+        self._gate = FirstMoveGate()
+        backend = GatedOT2Backend(
+            self._gate,
             host=host,
             port=port,
             request_timeout=self.wire_timeout.seconds,
@@ -175,8 +292,18 @@ class OT2LiquidHandlerDriver(PLRLiquidHandlerWrapper, PLROpentronsPipetteMotionM
         super().__init__(backend, visualize=visualize, sim_server=sim_server)
         self._ot_backend = backend
 
+    async def _retract_heads(self, command: str) -> None:
+        if self.is_initialized:
+            self._gate.arm(self._lift_low_pipettes)
 
-class _PLRStarBackendHolder:
+    async def _lift_low_pipettes(self) -> None:
+        backend = self._ot_backend
+        for channel in range(backend.num_channels):
+            if (await backend.get_channel_position(channel)).z < backend.traversal_height:
+                await backend.move_channel_z(channel, backend.traversal_height)
+
+
+class _PLRStarBackendHolder(DriverHooks):
     """Carries the STAR-typed backend handle shared by the Hamilton motion mixins.
 
     Declaring `_star_backend` once here rather than on each mixin keeps pyright from flagging it as
@@ -311,6 +438,8 @@ class STARLiquidHandlerDriver(
     drive (IGripperRotation), where the Flex gripper places blindly and closes only to a force. Its
     channels are independently driven, so head configuration falls to the generic per-channel
     default with no override. Inheritance shadows `interfaces`, so the full set is restated here.
+
+    Never run on a real STAR: written against PyLabRobot's STAR backend and tested in simulation only.
     """
 
     interfaces: ClassVar[frozenset[str]] = frozenset(
@@ -326,7 +455,7 @@ class STARLiquidHandlerDriver(
 
     # Forwarded so the MLSTAR firmware surface is advertised and cataloged.
     vendor_surfaces: ClassVar[tuple[VendorSurface, ...]] = (
-        VendorSurface(path="_backend", type=STARBackend),
+        VendorSurface(path="_backend", type=STARBackend, travels=_STAR_TRAVELS),
     )
 
     def __init__(
@@ -336,10 +465,29 @@ class STARLiquidHandlerDriver(
         left_side_panel_installed: bool = False,
         visualize: bool = False,
     ) -> None:
-        backend = STARBackend(
+        self._gate = FirstMoveGate()
+        backend = GatedSTARBackend(
+            self._gate, self._note_jaws_opened,
             device_address=device_address,
             serial_number=serial_number,
             left_side_panel_installed=left_side_panel_installed,
         )
         super().__init__(backend, visualize=visualize)
         self._star_backend = backend
+
+    async def _retract_heads(self, command: str) -> None:
+        if self.is_initialized:
+            self._gate.arm(lambda: self._lift_unless_loaded(command))
+
+    async def _lift_unless_loaded(self, command: str) -> None:
+        if self._jaws_may_be_loaded:
+            raise GantryBusyError(
+                f"{command}: the iSWAP may still hold labware. Open it with set_jaw_width, then ask again."
+            )
+        backend = self._star_backend
+        await backend.move_all_channels_in_z_safety()
+        drive = backend.extended_conf.left_x_drive
+        if drive.core_96_head_installed:
+            await backend.head96_move_to_z_safety()
+        if drive.iswap_installed and not backend.iswap_parked:
+            await backend.move_iswap_z(backend.iswap_traversal_height)

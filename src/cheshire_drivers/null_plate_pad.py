@@ -1,6 +1,8 @@
 from typing import Any, Dict
 
-class NullPlatePadDriver:
+from cheshire_drivers.driver_hooks import DriverHooks
+
+class NullPlatePadDriver(DriverHooks):
     def __init__(self, name: str) -> None:
         self._name = name
         self._is_initialized = True

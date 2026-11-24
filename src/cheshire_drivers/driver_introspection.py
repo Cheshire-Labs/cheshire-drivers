@@ -3,8 +3,8 @@
 Used by orca-client at handshake to populate DeviceConnectInfo over the wire,
 and by a gateway server to surface each connected device's operator-facing
 method surface (the @external interface contract plus auto-derived vendor
-extras; internal plumbing is hidden) via GET /api/devices/{id}/capabilities
-and the device_get_capabilities MCP tool.
+extras; internal plumbing is hidden) via GET /api/runtime/devices/{name}/introspection
+and the runtime_device_introspection MCP tool.
 
 `derive_capabilities(cls)` answers "what methods does this concrete driver expose
 beyond its declared interfaces?" (default-allow auto-derive; the user opted into
@@ -18,10 +18,10 @@ the introspection endpoint can both see what is callable and how to call it.
 import inspect
 import json
 from abc import ABC
-from collections.abc import Sequence
-from typing import Any, Dict, List, Literal, NamedTuple, Optional, Set, Tuple, TypeVar
+from collections.abc import Awaitable, Callable, Sequence
+from typing import Annotated, Any, Dict, List, Literal, NamedTuple, Optional, Set, Tuple, TypeVar, get_args, get_origin
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, JsonValue
 
 from cheshire_drivers.command_timings import CommandTiming, collect_command_timings
 
@@ -51,6 +51,52 @@ def external(method: F) -> F:
     """
     setattr(method, _EXTERNAL_ATTR, True)
     return method
+
+
+_LIFECYCLE_ATTR = "__cheshire_lifecycle__"
+
+
+def lifecycle(method: F) -> F:
+    """Mark an interface method as a lifecycle command: it brings the device up, links it, or hands it back.
+
+    Only its own operation may send one, since the server brings its record of the device in line after it.
+    """
+    setattr(method, _LIFECYCLE_ATTR, True)
+    return method
+
+
+_RETURNS_ATTR = "__cheshire_returns__"
+
+
+def returns(response_model: type[BaseModel]) -> Callable[[F], F]:
+    """The response model of a command whose driver method returns a bare value. Apply below `@property`."""
+
+    def mark(method: F) -> F:
+        setattr(method, _RETURNS_ATTR, response_model)
+        return method
+
+    return mark
+
+
+CommandFunction = Callable[..., Awaitable[BaseModel | JsonValue] | BaseModel | JsonValue]
+"""A driver method, or a property's getter."""
+
+
+def declared_response(member: property | CommandFunction) -> type[BaseModel] | None:
+    """The model `@returns` gave a method or property, or None."""
+    target = member.fget if isinstance(member, property) else member
+    response: type[BaseModel] | None = getattr(target, _RETURNS_ATTR, None)
+    return response
+
+
+def is_lifecycle(member: property | CommandFunction) -> bool:
+    """True if an interface member is marked `@lifecycle`."""
+    return bool(getattr(member, _LIFECYCLE_ATTR, False))
+
+
+def is_external(member: property | CommandFunction) -> bool:
+    """True if an interface member is marked `@external`."""
+    return _external_marked(member)
 
 
 def _external_marked(member: Any) -> bool:
@@ -172,9 +218,8 @@ def interface_member_names(interface_cls: type) -> frozenset[str]:
     its public-member surface, which is rarely what consumers want.
 
     This is the canonical source of truth for "what does this interface let you
-    call?" Both the gateway's capability validator (given an interface class via
-    NAME_TO_INTERFACE) and the per-driver MRO walk in `_interface_member_names`
-    delegate to this function.
+    call?" The command table and the per-driver MRO walk in `_interface_member_names`
+    both delegate to this function.
     """
     members: Set[str] = set()
     for abstract_name in getattr(interface_cls, "__abstractmethods__", frozenset()):
@@ -271,12 +316,15 @@ class VendorSurface(NamedTuple):
     driver advertises at the orca-client handshake and optional hardware like
     the Flex gripper is not discovered until connect. `prefix` namespaces the
     commands on the wire, so a gripper's `move_to` and a pipette mount's
-    `move_to` stay two names; the empty prefix leaves them bare.
+    `move_to` stay two names; the empty prefix leaves them bare. `travels`
+    names the members that move a liquid handler's gantry in X or Y, so its
+    heads are retracted before them.
     """
 
     path: str
     type: type
     prefix: str = ""
+    travels: frozenset[str] = frozenset()
 
     def wire_name(self, member: str) -> str:
         return f"{self.prefix}.{member}" if self.prefix else member
@@ -289,10 +337,12 @@ def vendor_surfaces(driver_cls: type) -> Tuple[VendorSurface, ...]:
     it, so nothing about that object is reachable from the driver class alone.
     Declaring it here is what puts its surface in front of an operator.
     """
-    declared = getattr(driver_cls, "vendor_surfaces", ())
+    declared = getattr(driver_cls, "vendor_surfaces", None)
+    if declared is None:
+        return ()
     if isinstance(declared, VendorSurface):
         # A VendorSurface is a NamedTuple, so one declared without its trailing
-        # comma is a sequence of its own three fields.
+        # comma is a sequence of its own fields.
         raise TypeError(
             f"{driver_cls.__name__}.vendor_surfaces is a single VendorSurface, "
             f"not a sequence of them. Add the trailing comma."
@@ -311,6 +361,13 @@ def vendor_surfaces(driver_cls: type) -> Tuple[VendorSurface, ...]:
             f"it would leave the commands on that surface unadvertised and "
             f"uncallable, with nothing said anywhere."
         )
+    for surface in surfaces:
+        unknown = sorted(name for name in surface.travels if not hasattr(surface.type, name))
+        if unknown:
+            raise TypeError(
+                f"{driver_cls.__name__}.vendor_surfaces says {surface.type.__name__} "
+                f"travels on {unknown}, which it does not have."
+            )
     return surfaces
 
 
@@ -412,6 +469,8 @@ def _annotation_str(annotation: Any) -> Optional[str]:
     """
     if annotation is inspect.Signature.empty:
         return None
+    if get_origin(annotation) is Annotated:
+        annotation = get_args(annotation)[0]
     if annotation is None or annotation is type(None):
         return "None"
     if inspect.isclass(annotation) and getattr(annotation, "__module__", None) != "typing":

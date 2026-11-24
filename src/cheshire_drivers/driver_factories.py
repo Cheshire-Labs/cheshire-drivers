@@ -29,10 +29,6 @@ from cheshire_drivers.plr_wrappers import (
     PLRThermocyclerBackendWrapper,
 )
 
-# transporter_driver lives in cheshire_drivers.plr (transporter_wrapper), not here:
-# it needs the optional pylabrobot.legacy.arms backend, not imported eagerly here.
-
-
 def sealer_driver(backend: ISealerDriver | PLRSealerBackend) -> ISealerDriver:
     """Wrap a PLR sealer backend into an ISealerDriver, or pass through if already one."""
     if isinstance(backend, PLRSealerBackend):

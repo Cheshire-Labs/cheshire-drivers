@@ -8,6 +8,7 @@ PLR semantics for free.
 """
 
 import pytest
+from pydantic import ValidationError
 from pylabrobot.resources.resource import Resource as PLRResource
 
 from cheshire_drivers.move_parameters import SEED_MOVE_PARAMETERS
@@ -267,7 +268,7 @@ class TestPickAtCoordsValidation:
         teachpoint = _teachpoint("nest_1")
 
         with pytest.raises(SimTransporterValidationError, match="empty"):
-            await driver.pick_at_coords(PickAtCoordsRequest(teachpoint=teachpoint, handling=SEED_MOVE_PARAMETERS))
+            await driver.pick_at_coords(PickAtCoordsRequest(teachpoint=teachpoint, labware_type="Plate_96", handling=SEED_MOVE_PARAMETERS))
 
     @pytest.mark.asyncio
     async def test_pick_at_coords_when_gripper_full_raises(self) -> None:
@@ -298,7 +299,7 @@ class TestPlaceAtCoordsValidation:
         driver = _fast_driver()
 
         with pytest.raises(SimTransporterValidationError, match="gripper is empty"):
-            await driver.place_at_coords(PlaceAtCoordsRequest(teachpoint=_teachpoint("nest_1"), handling=SEED_MOVE_PARAMETERS))
+            await driver.place_at_coords(PlaceAtCoordsRequest(teachpoint=_teachpoint("nest_1"), labware_type="Plate_96", handling=SEED_MOVE_PARAMETERS))
 
     @pytest.mark.asyncio
     async def test_place_at_coords_to_occupied_position_raises(self) -> None:
@@ -428,55 +429,19 @@ class TestInstanceIsolation:
         assert driver_a._resource_at("nest_1") is not None
 
 
-class TestExternalControlSkipsValidation:
-    """Ad-hoc / external-control commands set `external_control=True`. Nothing
-    tracks occupancy under external control, so the sim must NOT validate or mutate
-    its world graph: pick from empty succeeds, place onto occupied succeeds, and
-    the graph is left exactly as it was (a pure no-op, matching real hardware
-    which has no occupancy check at all).
-    """
+class TestPickAndPlaceAlwaysValidate:
+    """A pick or place request has no field that skips the sim's world check."""
 
-    @pytest.mark.asyncio
-    async def test_pick_from_empty_succeeds_and_does_not_mutate(self) -> None:
-        driver = _fast_driver()
-
-        await driver.pick_at_coords(
-            PickAtCoordsRequest(teachpoint=_teachpoint("pad_1"), external_control=True, handling=SEED_MOVE_PARAMETERS)
-        )
-
-        assert driver._gripper_payload() is None
-        assert driver._resource_at("pad_1") is None
-
-    @pytest.mark.asyncio
-    async def test_place_onto_occupied_succeeds_and_does_not_mutate(self) -> None:
-        driver = _fast_driver()
-        seeded = _make_plate("resident")
-        driver._seed_resource("pad_1", seeded)
-
-        await driver.place_at_coords(
-            PlaceAtCoordsRequest(teachpoint=_teachpoint("pad_1"), external_control=True, handling=SEED_MOVE_PARAMETERS)
-        )
-
-        assert driver._resource_at("pad_1") is seeded
-        assert driver._gripper_payload() is None
-
-    @pytest.mark.asyncio
-    async def test_pick_does_not_disturb_a_seeded_position(self) -> None:
-        driver = _fast_driver()
-        resident = _make_plate("resident")
-        driver._seed_resource("pad_1", resident)
-
-        await driver.pick_at_coords(
-            PickAtCoordsRequest(teachpoint=_teachpoint("pad_1"), external_control=True, handling=SEED_MOVE_PARAMETERS)
-        )
-
-        assert driver._resource_at("pad_1") is resident
-        assert driver._gripper_payload() is None
+    def test_a_request_refuses_an_external_control_field(self) -> None:
+        with pytest.raises(ValidationError):
+            PickAtCoordsRequest.model_validate(
+                {"teachpoint": _teachpoint("pad_1"), "external_control": True, "handling": SEED_MOVE_PARAMETERS}
+            )
 
     @pytest.mark.asyncio
     async def test_default_request_still_validates(self) -> None:
-        """Omitting external_control keeps the occupancy check (the workflow path)."""
+        """A pick that names a labware type is checked against the sim's world."""
         driver = _fast_driver()
 
         with pytest.raises(SimTransporterValidationError, match="empty"):
-            await driver.pick_at_coords(PickAtCoordsRequest(teachpoint=_teachpoint("pad_1"), handling=SEED_MOVE_PARAMETERS))
+            await driver.pick_at_coords(PickAtCoordsRequest(teachpoint=_teachpoint("pad_1"), labware_type="Plate_96", handling=SEED_MOVE_PARAMETERS))

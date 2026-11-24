@@ -1,32 +1,7 @@
-"""Per-operation Response payload base classes + cross-cutting scalars.
+"""Response base classes and the scalar responses every device kind shares.
 
-These are the typed return-side counterpart to the existing per-domain
-Request models in ``*_request_validation.py`` modules. orca-client
-wraps a driver's return value into a concrete subclass before sending
-it back over the gateway WebSocket; the gateway server builds a
-``SuccessEnvelope[ConcreteResponse]`` around it for MCP and REST.
-
-Hierarchy:
-
-  * :class:`CommandResponse` -- abstract base. Marker so the wire
-    contract is identifiable in the SuccessEnvelope generic.
-  * :class:`EmptyCommandResponse` -- ack-only marker. Used for
-    operations that complete without a meaningful payload (initialize,
-    open, close, shake, stop, lock_plate, move_plate, etc.). Keeps
-    ``result`` always populated as ``{}`` rather than omitted.
-  * :class:`InitializedResponse` -- single-field bool wrapper for
-    ``is_initialized`` queries on any driver.
-  * :class:`TemperatureResponse` -- single-field float wrapper for
-    ``get_temperature`` queries on sealers, etc.
-
-Per-category response shapes (LabwareStateResponse, DeckStateResponse,
-SpeedResponse, JointCoordinates, CartesianCoordinates) live alongside
-their matching Request models in the per-category model files
-(``liquid_handler_models.py``, ``transporter_models.py``,
-``teachpoints.py``). The mapping ``command -> ResponseClass`` lives in
-each category's ``*_request_validation.py:*_RESPONSE_MODELS`` dict;
-:func:`cheshire_drivers.response_lookup.lookup_response_model` is the
-single entry point that resolves to the right class.
+orca-client wraps a driver's return value in one of these before sending it back.
+The command table (``command_table.py``) says which one each command returns.
 """
 
 from pydantic import BaseModel, ConfigDict

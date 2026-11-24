@@ -25,7 +25,6 @@ from cheshire_drivers.move_parameters import (
 from cheshire_drivers.plr import PLRTransporterBackendWrapper, convert_joint_to_plr_dict
 from cheshire_drivers.plr.arm_pick_place import EmptyGripError, UnreachableTargetError
 from cheshire_drivers.plr.transporter import PreciseFlexTransporterDriver
-from cheshire_drivers.plr.transporter_wrapper import _joint_tuple_to_plr_dict
 from cheshire_drivers.teachpoints import Teachpoint, JointCoordinates, CartesianCoordinates
 from cheshire_drivers.transporter_models import (
     CloseGripperRequest,
@@ -317,19 +316,6 @@ def test_the_recording_arm_offers_nothing_the_real_arm_does_not():
     # `dir` rather than `hasattr`: reading a property here would run it, and some of
     # them raise on an arm that has not been set up.
     assert sorted(surface - set(dir(arm))) == []
-
-
-def test_crossover_constants_map_to_named_axes_and_carry_no_jaw_position():
-    """The crossover tuples are [rail, base, shoulder, elbow, wrist, gripper]; the helper
-    keys them by name and drops the gripper slot. Its 0.0 would drive the jaws to the
-    bottom of the axis, and the arm keeps its own jaw position for an omitted axis."""
-    d = _joint_tuple_to_plr_dict(PLRTransporterBackendWrapper.SAFE_LOC)
-    assert d[Axis.RAIL] == 0.0
-    assert d[Axis.BASE] == 170.0
-    assert d[Axis.SHOULDER] == 0.0
-    assert d[Axis.ELBOW] == 180.0
-    assert d[Axis.WRIST] == -180.0
-    assert Axis.GRIPPER not in d
 
 
 def _cartesian_teachpoint(position_id: str = "p") -> Teachpoint:

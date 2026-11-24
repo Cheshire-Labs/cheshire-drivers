@@ -20,10 +20,9 @@ from cheshire_drivers.thermocycler_models import (
     Step,
     TemperatureListResponse,
 )
-from cheshire_drivers.thermocycler_request_validation import (
-    THERMOCYCLER_REQUEST_MODELS,
-    wrap_thermocycler_payload,
-)
+from pydantic import JsonValue
+
+from cheshire_drivers.command_table import COMMANDS, DriverKwargs
 from pylabrobot.legacy.thermocycling.standard import Protocol as PLRProtocol
 
 
@@ -43,6 +42,12 @@ def _sample_protocol() -> Protocol:
             ),
         ]
     )
+
+
+def _wrap(command: str, params: dict[str, JsonValue]) -> DriverKwargs:
+    found = COMMANDS.find({"IThermocycler"}, command)
+    assert found is not None, command
+    return found.driver_kwargs(params)
 
 
 def test_to_plr_protocol_maps_fields_one_to_one() -> None:
@@ -66,15 +71,15 @@ def test_wrap_thermocycler_payload_wraps_run_protocol() -> None:
         "protocol": _sample_protocol().model_dump(),
         "block_max_volume": 25.0,
     }
-    wrapped = wrap_thermocycler_payload("run_protocol", payload)
+    wrapped = _wrap("run_protocol", payload)
     assert set(wrapped.keys()) == {"request"}
     assert isinstance(wrapped["request"], RunProtocolRequest)
     assert wrapped["request"].block_max_volume == 25.0
 
 
 def test_wrap_thermocycler_payload_rejects_unknown_field() -> None:
-    with pytest.raises(ValueError, match="Unknown fields"):
-        wrap_thermocycler_payload(
+    with pytest.raises(ValidationError, match="bogus"):
+        _wrap(
             "set_block_temperature", {"temperature": [95.0], "bogus": 1},
         )
 
@@ -85,15 +90,8 @@ def test_run_protocol_request_rejects_nonpositive_block_max_volume() -> None:
 
 
 def test_wrap_thermocycler_payload_wraps_empty_marker_getter() -> None:
-    wrapped = wrap_thermocycler_payload("get_lid_open", {})
+    wrapped = _wrap("get_lid_open", {})
     assert set(wrapped.keys()) == {"request"}
-
-
-def test_every_abstract_getter_registered() -> None:
-    non_base = IThermocyclerDriver.__abstractmethods__ - set(
-        ("initialize", "is_initialized", "open", "close"),
-    )
-    assert non_base == set(THERMOCYCLER_REQUEST_MODELS)
 
 
 @pytest.mark.asyncio

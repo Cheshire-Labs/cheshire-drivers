@@ -14,6 +14,7 @@ from cheshire_drivers.liquid_handler_models import (
     DeckLayoutConfig,
     DeckResourceConfig,
     GetDeckStateRequest,
+    MovePlateRequest,
     ReconcileDeckOccupancyRequest,
     RemoveDeckLabwareRequest,
     ResetDeckLabwareRequest,
@@ -137,5 +138,112 @@ class TestWholesaleOps:
         ))
 
         await driver.configure_deck(DeckLayoutConfig(deck_type="FlexDeck", resources=[]))
+
+        assert (await _state(driver)).labware == []
+
+
+class TestMoves:
+    """A sim move_plate moves the deck entry: get_deck_state reports the new site and the
+    vacated site is free. A plate not on the deck, a destination another plate holds, and
+    a from_position another plate holds are refused, and nothing moves."""
+
+    @pytest.mark.asyncio
+    async def test_a_moved_plate_reports_its_new_site_only(self) -> None:
+        driver = _driver()
+        await driver.add_deck_labware(AddDeckLabwareRequest(
+            name="plate_1", catalog_ref="Cor_96_wellplate_360ul_Fb", at="A1-slot",
+        ))
+
+        await driver.move_plate(MovePlateRequest(plate="plate_1", to_position="D4-slot"))
+
+        state = await _state(driver)
+        assert [(i.name, i.site) for i in state.labware] == [("plate_1", "D4-slot")]
+
+    @pytest.mark.asyncio
+    async def test_a_move_onto_an_occupied_site_is_refused_and_nothing_moves(self) -> None:
+        driver = _driver()
+        await driver.add_deck_labware(AddDeckLabwareRequest(
+            name="plate_1", catalog_ref="Cor_96_wellplate_360ul_Fb", at="A1-slot",
+        ))
+        await driver.add_deck_labware(AddDeckLabwareRequest(
+            name="plate_2", catalog_ref="Cor_96_wellplate_360ul_Fb", at="D4-slot",
+        ))
+
+        with pytest.raises(ValueError, match="already occupied"):
+            await driver.move_plate(MovePlateRequest(plate="plate_1", to_position="D4-slot"))
+
+        state = await _state(driver)
+        assert sorted((i.name, i.site) for i in state.labware) == [
+            ("plate_1", "A1-slot"),
+            ("plate_2", "D4-slot"),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_move_to_the_site_the_plate_is_on_changes_nothing(self) -> None:
+        driver = _driver()
+        await driver.add_deck_labware(AddDeckLabwareRequest(
+            name="plate_1", catalog_ref="Cor_96_wellplate_360ul_Fb", at="A1-slot",
+        ))
+
+        await driver.move_plate(MovePlateRequest(plate="plate_1", to_position="A1-slot"))
+
+        state = await _state(driver)
+        assert [(i.name, i.site) for i in state.labware] == [("plate_1", "A1-slot")]
+
+    @pytest.mark.asyncio
+    async def test_the_vacated_site_takes_the_next_plate(self) -> None:
+        driver = _driver()
+        await driver.add_deck_labware(AddDeckLabwareRequest(
+            name="plate_1", catalog_ref="Cor_96_wellplate_360ul_Fb", at="A1-slot",
+        ))
+        await driver.move_plate(MovePlateRequest(plate="plate_1", to_position="D4-slot"))
+
+        await driver.add_deck_labware(AddDeckLabwareRequest(
+            name="plate_2", catalog_ref="Cor_96_wellplate_360ul_Fb", at="A1-slot",
+        ))
+
+        state = await _state(driver)
+        assert sorted((i.name, i.site) for i in state.labware) == [
+            ("plate_1", "D4-slot"),
+            ("plate_2", "A1-slot"),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_from_position_another_plate_holds_is_refused_and_nothing_moves(self) -> None:
+        driver = _driver()
+        await driver.add_deck_labware(AddDeckLabwareRequest(
+            name="plate_1", catalog_ref="Cor_96_wellplate_360ul_Fb", at="A1-slot",
+        ))
+        await driver.add_deck_labware(AddDeckLabwareRequest(
+            name="plate_2", catalog_ref="Cor_96_wellplate_360ul_Fb", at="B1-slot",
+        ))
+
+        with pytest.raises(ValueError, match="from_position B1-slot holds 'plate_2'"):
+            await driver.move_plate(MovePlateRequest(plate="plate_1", from_position="B1-slot", to_position="C1-slot"))
+
+        state = await _state(driver)
+        assert sorted((i.name, i.site) for i in state.labware) == [
+            ("plate_1", "A1-slot"),
+            ("plate_2", "B1-slot"),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_an_empty_from_position_moves_the_plate_from_where_it_is(self) -> None:
+        driver = _driver()
+        await driver.add_deck_labware(AddDeckLabwareRequest(
+            name="plate_1", catalog_ref="Cor_96_wellplate_360ul_Fb", at="A1-slot",
+        ))
+
+        await driver.move_plate(MovePlateRequest(plate="plate_1", from_position="B1-slot", to_position="C1-slot"))
+
+        state = await _state(driver)
+        assert [(i.name, i.site) for i in state.labware] == [("plate_1", "C1-slot")]
+
+    @pytest.mark.asyncio
+    async def test_moving_a_plate_that_is_not_on_the_deck_is_refused(self) -> None:
+        driver = _driver()
+
+        with pytest.raises(ValueError, match="not on the deck"):
+            await driver.move_plate(MovePlateRequest(plate="ghost", to_position="D4-slot"))
 
         assert (await _state(driver)).labware == []

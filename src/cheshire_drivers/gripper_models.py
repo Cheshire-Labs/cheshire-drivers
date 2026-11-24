@@ -19,6 +19,7 @@ from typing_extensions import Self
 
 from pydantic import model_validator
 
+from cheshire_drivers.gantry_models import GantryJogRequest
 from cheshire_drivers.liquid_handler_models import _StrictModel
 
 
@@ -41,7 +42,7 @@ class MoveGripperToRequest(_StrictModel):
 # --- IGripperPosition: read + jog. Needs position feedback ---
 
 
-class MoveGripperRelativeRequest(_StrictModel):
+class MoveGripperRelativeRequest(GantryJogRequest):
     """Jog the gripper by a delta on each supplied axis (mm)."""
 
     dx: Optional[float] = None
@@ -53,6 +54,9 @@ class MoveGripperRelativeRequest(_StrictModel):
         if self.dx is None and self.dy is None and self.dz is None:
             raise ValueError("MoveGripperRelativeRequest: supply at least one of dx, dy, dz to jog.")
         return self
+
+    def moves_in_xy(self) -> bool:
+        return bool(self.dx) or bool(self.dy)
 
 
 class GetGripperPositionRequest(_StrictModel):

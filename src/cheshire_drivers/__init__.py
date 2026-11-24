@@ -144,7 +144,6 @@ _EXPORTS: dict[str, str] = {
     "sealer_driver": "cheshire_drivers.driver_factories",
     "shaker_driver": "cheshire_drivers.driver_factories",
     "thermocycler_driver": "cheshire_drivers.driver_factories",
-    "transporter_driver": "cheshire_drivers.plr.transporter_wrapper",
 }
 
 # Derived, not repeated: a literal list here would be a second copy of the map

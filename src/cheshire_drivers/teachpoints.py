@@ -1,6 +1,5 @@
 from __future__ import annotations
 from typing import Any, ClassVar, Iterable, List, Dict, Literal, Optional, Protocol, runtime_checkable
-import json
 
 from cheshire_drivers.liquid_handler_models import _StrictModel
 from cheshire_drivers.move_parameters import MoveParameterPatch
@@ -47,12 +46,7 @@ class ITeachpointStore(Protocol):
 
 
 class InMemoryTeachpointStore:
-    """In-process `ITeachpointStore` for source-available local use.
-
-    Constructed with the teachpoints the topology declared (or loaded from
-    a JSON file). Mutations are sync so callers can update the store from
-    any context.
-    """
+    """In-process `ITeachpointStore`. Mutations are sync so callers can update it from any context."""
 
     def __init__(self, teachpoints: Iterable[Teachpoint] = ()) -> None:
         self._by_position_id: Dict[str, Teachpoint] = {tp.position_id: tp for tp in teachpoints}
@@ -111,8 +105,7 @@ class NullTeachpointStore:
 class AccessConfig(_StrictModel):
     """Defines how a robotic arm approaches and retracts from a location.
 
-    Access configs are defined in JSON teachpoint files and can be referenced by multiple
-    teachpoints to avoid duplication.
+    A teachpoint names its access config, so many teachpoints can share one.
 
     For VERTICAL access (stacks, deck positions):
         - vertical_clearance: Distance (mm) above teachpoint for approach/depart
@@ -177,6 +170,8 @@ class JointCoordinates(_StrictModel):
     Gripper defaults to 0.0 (teachpoints typically don't store gripper state).
     """
     coord_type: ClassVar[str] = "joint"
+    optional_joints: ClassVar[frozenset[str]] = frozenset({"rail", "gripper"})
+    """The joints an arm may lack; a teachpoint stores 0 for them. Every other joint must be reported."""
     rail: float = 0.0
     base: float = 0.0
     shoulder: float = 0.0
@@ -433,83 +428,6 @@ class Teachpoint:
             },
         )
 
-    @staticmethod
-    def load_teachpoints_from_file(file_path: str) -> List[Teachpoint]:
-        with open(file_path, 'r') as f:
-            data = json.load(f)
-
-        # Parse access configs from JSON
-        access_configs: Dict[str, AccessConfig] = {}
-        if 'access_configs' in data:
-            for name, cfg_data in data['access_configs'].items():
-                access_configs[name] = AccessConfig(
-                    name=name,
-                    access_type=cfg_data['access_type'],
-                    gripper_offset=float(cfg_data.get('gripper_offset', 20.0)),
-                    vertical_clearance=float(cfg_data.get('vertical_clearance', 20.0)),
-                    horizontal_clearance=float(cfg_data.get('horizontal_clearance', 100.0)),
-                )
-
-        # Add hardcoded defaults only if not defined in JSON
-        if 'default_vertical' not in access_configs:
-            access_configs['default_vertical'] = AccessConfig(
-                name='default_vertical', access_type='vertical',
-                gripper_offset=20.0, vertical_clearance=20.0, horizontal_clearance=50.0,
-            )
-        if 'default_horizontal' not in access_configs:
-            access_configs['default_horizontal'] = AccessConfig(
-                name='default_horizontal', access_type='horizontal',
-                gripper_offset=20.0, vertical_clearance=20.0, horizontal_clearance=100.0,
-            )
-
-        # Parse teachpoints and resolve access config references
-        teachpoints: List[Teachpoint] = []
-        for tp_data in data.get('teachpoints', []):
-            # Detect coordinate type by field presence
-            if 'base' in tp_data:
-                # Joint coordinates
-                coordinates: CartesianCoordinates | JointCoordinates = JointCoordinates(
-                    base=float(tp_data['base']),
-                    shoulder=float(tp_data['shoulder']),
-                    elbow=float(tp_data['elbow']),
-                    wrist=float(tp_data['wrist']),
-                    rail=float(tp_data.get('rail', 0.0))
-                )
-                orientation = None
-            else:
-                # Cartesian coordinates
-                coordinates = CartesianCoordinates(
-                    x=float(tp_data['x']),
-                    y=float(tp_data['y']),
-                    z=float(tp_data['z']),
-                    yaw=float(tp_data['yaw']),
-                    pitch=float(tp_data['pitch']),
-                    roll=float(tp_data['roll'])
-                )
-                orientation = tp_data.get('orientation', None)
-
-            # Resolve access config (optional for waypoints)
-            config_name = tp_data.get('access')
-            if config_name is not None:
-                if config_name not in access_configs:
-                    raise ValueError(
-                        f"Teachpoint '{tp_data['position_id']}' references unknown access config '{config_name}'"
-                    )
-                cfg = access_configs[config_name]
-            else:
-                cfg = None
-
-            tp = Teachpoint(
-                position_id=tp_data['position_id'],
-                coordinates=coordinates,
-                orientation=orientation,
-                access=cfg,
-                gateway=tp_data.get('gateway', None)
-            )
-            teachpoints.append(tp)
-
-        return teachpoints
-
 
 class TeachpointsRegistry:
     def __init__(self) -> None:
@@ -546,78 +464,6 @@ class TeachpointsRegistry:
     def exists(self, position_id: str) -> bool:
         """Check if a teachpoint exists."""
         return position_id in self._registry
-
-    def save(self, filepath: str) -> None:
-        """Saves teachpoints to file using access config references."""
-        # Reconstruct unique access configs from teachpoints
-        # Note: If multiple teachpoints claim same config name but have different params,
-        # only the first one's params are used (assumes data is not corrupted)
-        access_configs_dict: Dict[str, Dict[str, Any]] = {}
-
-        for tp in self._registry.values():
-            config_name = tp._access_config_name
-            if config_name is None:
-                continue  # Waypoint without access config
-
-            # Skip hardcoded defaults (always available in load)
-            if config_name.startswith('default_'):
-                continue
-
-            # Only write each config once (first occurrence)
-            if config_name not in access_configs_dict:
-                access_configs_dict[config_name] = {
-                    'access_type': tp.access_type,
-                    'gripper_offset': tp.gripper_offset,
-                    'vertical_clearance': tp.vertical_clearance,
-                    'horizontal_clearance': tp.horizontal_clearance,
-                }
-
-        # Build teachpoints list with access references
-        teachpoints_list: List[Dict[str, Any]] = []
-        for tp in self._registry.values():
-            tp_dict: Dict[str, Any] = {'position_id': tp.position_id}
-
-            # Serialize coordinates based on type
-            if tp.is_joint_space():
-                coords = tp.coordinates
-                assert isinstance(coords, JointCoordinates)
-                tp_dict.update({
-                    'base': coords.base,
-                    'shoulder': coords.shoulder,
-                    'elbow': coords.elbow,
-                    'wrist': coords.wrist,
-                })
-                if coords.rail != 0.0:
-                    tp_dict['rail'] = coords.rail
-            elif tp.is_cartesian():
-                coords = tp.coordinates
-                assert isinstance(coords, CartesianCoordinates)
-                tp_dict.update({
-                    'x': coords.x,
-                    'y': coords.y,
-                    'z': coords.z,
-                    'yaw': coords.yaw,
-                    'pitch': coords.pitch,
-                    'roll': coords.roll,
-                    'orientation': tp.orientation,
-                })
-
-            # Add access config reference if present
-            if tp._access_config_name is not None:
-                tp_dict['access'] = tp._access_config_name
-
-            if tp.gateway:
-                tp_dict['gateway'] = tp.gateway
-            teachpoints_list.append(tp_dict)
-
-        # Build final JSON structure
-        data: Dict[str, Any] = {}
-        if access_configs_dict:
-            data['access_configs'] = access_configs_dict
-        data['teachpoints'] = teachpoints_list
-
-        with open(filepath, 'w') as f:
-            json.dump(data, f, indent=2)
 
     def clear(self) -> None:
         self._registry = {}

@@ -9,11 +9,9 @@ authoritative occupancy set, without rebuilding the whole deck. Carriers
 import pytest
 from pydantic import ValidationError
 
-from cheshire_drivers.lh_request_validation import (
-    LH_REQUEST_MODELS,
-    LH_RESPONSE_MODELS,
-    wrap_lh_payload,
-)
+from pydantic import JsonValue
+
+from cheshire_drivers.command_table import COMMANDS, DriverKwargs
 from cheshire_drivers.liquid_handler_models import (
     DeckLayoutConfig,
     DeckResourceConfig,
@@ -60,6 +58,12 @@ async def _seed_occupancy(
 def _names(driver: ChatterboxLiquidHandlerDriver) -> set[str]:
     assert driver._lh is not None
     return {r.name for r in driver._lh.deck.get_all_resources()}
+
+
+def _wrap(command: str, params: dict[str, JsonValue]) -> DriverKwargs:
+    found = COMMANDS.find({"ILiquidHandler"}, command)
+    assert found is not None, command
+    return found.driver_kwargs(params)
 
 
 class TestResetDeckLabware:
@@ -148,16 +152,14 @@ class TestReconcileDeckOccupancy:
 class TestWireRegistration:
     def test_both_commands_in_request_and_response_tables(self) -> None:
         for command in ("reset_deck_labware", "reconcile_deck_occupancy"):
-            assert command in LH_REQUEST_MODELS
-            assert command in LH_RESPONSE_MODELS
-            assert LH_RESPONSE_MODELS[command] is LabwareStateResponse
+            assert COMMANDS.response_model({"ILiquidHandler"}, command) is LabwareStateResponse
 
     def test_reset_wire_round_trip(self) -> None:
-        wrapped = wrap_lh_payload("reset_deck_labware", {})
+        wrapped = _wrap("reset_deck_labware", {})
         assert isinstance(wrapped["request"], ResetDeckLabwareRequest)
 
     def test_reconcile_wire_round_trip(self) -> None:
-        wrapped = wrap_lh_payload(
+        wrapped = _wrap(
             "reconcile_deck_occupancy",
             {"resources": [_plate("plate_1", site_index=0).model_dump()]},
         )

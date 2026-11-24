@@ -20,7 +20,8 @@ class InterruptedMoveTracking:
     """Remembers the gripper move that raised, until something settles where
     that labware is: the same labware moving, or anything that restates the deck
     wholesale. A successful move of DIFFERENT labware does not settle it, since
-    a plate stranded in the jaws is still stranded.
+    a plate stranded in the jaws is still stranded. A stand-in move that raised
+    names no labware, so only a deck-wide restate settles it.
 
     The FIRST unsettled failure is the one kept. Jaws already holding something
     refuse the next move too, so a later failure is usually that one's echo, and
@@ -47,8 +48,9 @@ class InterruptedMoveTracking:
 
     @asynccontextmanager
     async def _tracking_gripper_move(
-        self, labware: str, to_site: str, from_site: str | None = None,
+        self, labware: str | None, to_site: str, from_site: str | None = None,
     ) -> AsyncIterator[None]:
+        """`labware` is None for a stand-in move: nothing on record is being moved."""
         try:
             yield
         except BaseException as exc:
@@ -65,7 +67,8 @@ class InterruptedMoveTracking:
             raise
         # A move that finished put the labware down and let go of it.
         self._jaws_may_be_loaded = False
-        self._resolve_interrupted_move(labware)
+        if labware is not None:
+            self._resolve_interrupted_move(labware)
 
     def _note_jaws_opened(self) -> None:
         """The jaws are open, so nothing is hanging off the gantry.

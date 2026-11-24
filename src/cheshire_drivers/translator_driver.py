@@ -1,6 +1,10 @@
 """Sim driver for translators/shuttles: one carriage serves every taught position."""
 
+from typing import ClassVar
+
+from cheshire_drivers.faults import FaultSpec
 from cheshire_drivers.sims import (
+    SimStrategy,
     SimTransporterDriver,
     SimTransporterValidationError,
 )
@@ -20,16 +24,18 @@ class SimTranslatorDriver(SimTransporterDriver):
     seed/unseed sync, so a stale occupant cannot false-positive it.
     """
 
+    _jogs_from_remembered_joints: ClassVar[bool] = False
+
+    def __init__(
+        self, name: str, sim_strategy: SimStrategy | None = None, faults: list[FaultSpec] | None = None,
+    ) -> None:
+        super().__init__(name, sim_strategy, faults)
+
     @property
     def single_carriage(self) -> bool:
         return True
 
     async def place_at_coords(self, request: PlaceAtCoordsRequest) -> None:
-        if request.external_control:
-            # An external-control place is a world no-op in the base; the
-            # occupancy guard must not turn that into a rejection.
-            await super().place_at_coords(request)
-            return
         target = request.teachpoint.position_id
         occupied = sorted(
             position_id

@@ -15,7 +15,12 @@ from cheshire_drivers.gantry_models import (
     ParkGantryRequest,
 )
 from cheshire_drivers.gripper_models import MoveGripperToRequest
+from cheshire_drivers.interfaces import IGantryParkingDriver
 from cheshire_drivers.liquid_handler_models import DiscardTipsRequest
+from cheshire_drivers.plr.liquid_handler import (
+    ChatterboxLiquidHandlerDriver,
+    ChatterboxLiquidHandlerWithProtocolDriver,
+)
 from cheshire_drivers.plr.opentrons_flex import FlexLiquidHandlerDriver
 from cheshire_drivers.sims import (
     SimLiquidHandlerDriver,
@@ -57,8 +62,8 @@ def _record_gripper_moves(driver: FlexLiquidHandlerDriver) -> List[tuple]:
 
 async def test_a_handler_holding_tips_refuses_to_park() -> None:
     driver, _ = await _bench()
-    retracted = _record_retractions(driver)
     await _pick_up_column(driver)
+    retracted = _record_retractions(driver)
 
     with pytest.raises(GantryBusyError):
         await driver.park_gantry(ParkGantryRequest())
@@ -76,6 +81,7 @@ async def test_the_refusal_survives_the_tips_coming_off() -> None:
         await driver.park_gantry(ParkGantryRequest())
 
     await driver.discard_tips(DiscardTipsRequest())
+    retracted.clear()
 
     await driver.park_gantry(ParkGantryRequest())
     assert retracted == ["leftZ", "y"]
@@ -138,6 +144,18 @@ async def test_a_sim_handler_can_be_stepped_aside(sim_driver: type) -> None:
     await driver.park_gantry(ParkGantryRequest())
 
     assert "IGantryParking" in sim_driver.interfaces
+
+
+@pytest.mark.parametrize(
+    "chatterbox", [ChatterboxLiquidHandlerDriver, ChatterboxLiquidHandlerWithProtocolDriver],
+)
+async def test_a_chatterbox_handler_parks_and_says_so_at_the_handshake(
+    chatterbox: type[ChatterboxLiquidHandlerDriver],
+) -> None:
+    assert issubclass(chatterbox, IGantryParkingDriver)
+    assert {"IGantryParking", "ILiquidHandler"} <= chatterbox.interfaces
+
+    await chatterbox().park_gantry(ParkGantryRequest())
 
 
 async def test_the_refusal_names_every_head_that_is_holding() -> None:

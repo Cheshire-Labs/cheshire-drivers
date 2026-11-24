@@ -9,9 +9,9 @@ single scalar. A raw `list[float]` or a raw enum would raise, so the four
 temperature getters return `TemperatureListResponse` and the two enum getters
 return `ThermocyclerStatusResponse`; the drivers RETURN those models. The
 scalar getters (`get_lid_open`, `get_hold_time`, the four counters) return the
-raw scalar and the wire wrap projects it onto the matching single-field
-Response model registered in `THERMOCYCLER_RESPONSE_MODELS` (mirror of the
-transporter `get_speed` -> `SpeedResponse` pattern).
+raw scalar, marked with `@returns`, and the wire wrap projects it onto that
+single-field Response model (the same as the transporter's `get_speed` ->
+`SpeedResponse`).
 """
 
 from typing import List, Optional
